@@ -1,0 +1,5 @@
+TODO:
+    Configurable:
+        Time to wait before scan(and whether it should wait)
+        Togglable context menu if possible
+        

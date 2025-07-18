@@ -1,0 +1,64 @@
+body {
+    font-family: Arial, sans-serif;
+    width: 300px;
+    margin: 0;
+    padding: 10px;
+    box-sizing: border-box;
+    background-color: #000;
+  }
+
+  .logo {
+    text-align: center;
+    margin-bottom: 10px;
+  }
+
+  .logo img {
+    max-width: 100px;
+    float:left;
+    height: auto;
+    margin-right:10px;
+  }
+
+  .section {
+    margin-bottom: 15px;
+  }
+
+  .slider-container,
+  .checkbox-container {
+    margin: 10px 0;
+  }
+
+  .buttons {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  button {
+    flex: 1;
+    margin: 0 5px 0 0;
+    border: none;
+    height:25px;
+    background-color: #041f4b;
+    color: white;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background-color: #09429c;
+  }
+  h5 {
+    color: white;
+    margin: 0;
+    padding: 0;
+    display:inline
+  }
+  .hamburger-container img{
+    text-align: right;
+    width: 8px;
+    height: 20px;
+    top: -5px;
+    float:right;
+    position: relative;
+    cursor: pointer;
+  }

@@ -1,0 +1,27 @@
+{
+    "name": "Ghoti",
+    "description": "Phishing detector extension with LLM-based analysis",
+    "version": "0.1.0",
+    "manifest_version": 3,
+    "action": {
+      "default_popup": "./popup/index.html",
+      "default_icon": "assets/logo_512.png",
+      "default_title": "Ghoti Phishing Detector"
+    },
+    "icons":{
+      "16": "assets/logo_16.png",
+      "48": "assets/logo_48.png",
+      "128": "assets/logo_128.png",
+      "512": "assets/logo_512.png"
+    },
+    "permissions": ["scripting","tabs"],
+    "host_permissions": [
+      "<all_urls>",
+      "*://*/*"
+    ],
+    "content_scripts": [{
+      "matches": ["<all_urls>"],
+      "js": ["scripts/inject.js"],
+      "run_at": "document_idle"
+    }]
+  }
