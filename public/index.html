@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Ghoti</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+
+<body data-expanded-left="false" data-expanded-bottom="false">
+
+  <!-- Left expand button - vertical sidebar bar -->
+  <button id="expand-left-btn" class="expand-sidebar" title="Durum panelini aç/kapat">
+    <span class="expand-arrow">▶</span>
+  </button>
+
+  <!-- Left panel - extension status (hidden by default) -->
+  <aside id="left-panel" class="panel panel-left">
+    <h4>Durum</h4>
+    <div class="status-item">
+      <span class="status-label">LLM:</span>
+      <span id="llm-status" class="status-value">Yükleniyor...</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">Model:</span>
+      <span id="model-name" class="status-value">-</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">İlerleme:</span>
+      <div class="progress-bar">
+        <div id="load-progress" class="progress-fill"></div>
+      </div>
+    </div>
+    <div class="status-item">
+      <span class="status-label">Sayfa:</span>
+      <span id="page-status" class="status-value">-</span>
+    </div>
+
+    <!-- Model output panel (visible when both expanded) -->
+    <section id="output-panel" class="panel-output">
+      <h4>Model Çıktısı</h4>
+      <pre id="model-output" class="output-content">Henüz çıktı yok</pre>
+    </section>
+  </aside>
+
+  <!-- Main content area -->
+  <div class="main-content">
+    <!-- Header - always visible -->
+    <header class="popup-header">
+      <div class="logo-container">
+        <img src="../icons/logo_128.png" alt="Ghoti">
+        <label class="switch">
+          <input type="checkbox" id="active-checkbox">
+          <span class="slider round"></span>
+        </label>
+      </div>
+    </header>
+
+    <!-- Default section - always visible (thresholds) -->
+    <section class="default-section">
+      <div class="slider-group">
+        <label for="slider1">Yerel Eşik: <span id="slider1-val">30</span>%</label>
+        <input type="range" id="slider1" min="0" max="100" value="30">
+      </div>
+      <div class="slider-group">
+        <label for="slider2">Genel Eşik: <span id="slider2-val">60</span>%</label>
+        <input type="range" id="slider2" min="0" max="100" value="60">
+      </div>
+
+      <!-- Quick action buttons (visible when left expanded, bottom collapsed) -->
+      <div class="quick-actions">
+        <button id="btn-report-quick" class="action-btn">Bildir</button>
+        <button id="btn-rescan-quick" class="action-btn">Tara</button>
+        <button id="btn-settings-quick" class="action-btn">Ayarlar</button>
+      </div>
+    </section>
+
+    <!-- Expandable section - more options (hidden by default) -->
+    <section id="more-options" class="more-section">
+      <div class="checkbox-section">
+        <label><input type="checkbox" id="checkbox1"> Şüpheli bulunursa oran gösterilsin</label>
+        <label><input type="checkbox" id="checkbox2"> Güven oranı her zaman gösterilsin</label>
+        <label><input type="checkbox" id="checkbox3"> Taranana kadar erişim engellensin</label>
+        <label><input type="checkbox" id="checkbox4"> Taranan sayfalar önbelleğe alınsın</label>
+        <label><input type="checkbox" id="checkbox5" checked> Tarama için sayfa içeriği de gönderilsin</label>
+      </div>
+
+      <div class="button-section">
+        <button id="btn-report">Bildir</button>
+        <button id="btn-rescan">Tara</button>
+        <button id="btn-settings">Ayarlar</button>
+      </div>
+    </section>
+
+    <!-- Footer with bottom expand button -->
+    <footer class="popup-footer">
+      <button id="expand-bottom-btn" class="expand-toggle" title="Daha fazla seçenek">
+        <span class="expand-label">Daha Fazla</span>
+        <span class="expand-arrow">▼</span>
+      </button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>

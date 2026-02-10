@@ -1,0 +1,513 @@
+/* CSS Custom Properties for consistency */
+:root {
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #1a1a2e;
+  --bg-panel: #16213e;
+  --accent: #0f3460;
+  --accent-hover: #1a508b;
+  --text-primary: #e8e8e8;
+  --text-secondary: #a0a0a0;
+  --text-muted: #6b7280;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --border-radius: 6px;
+  --transition: 0.25s ease;
+
+  /* Dimensions */
+  --sidebar-width: 24px;
+  --left-panel-width: 140px;
+  --footer-height: 32px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  height: auto;
+  min-height: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+
+  /* Horizontal layout: sidebar + main */
+  display: flex;
+  align-items: stretch;
+  min-width: 200px;
+  height: auto;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Left vertical sidebar expand button */
+.expand-sidebar {
+  width: var(--sidebar-width);
+  border: none;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid var(--accent);
+  transition: background var(--transition), color var(--transition);
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.expand-sidebar:hover {
+  background: var(--accent);
+  color: var(--text-primary);
+}
+
+.expand-sidebar .expand-arrow {
+  font-size: 12px;
+  transition: transform var(--transition);
+}
+
+body[data-expanded-left="true"] .expand-sidebar {
+  color: var(--text-primary);
+  background: var(--accent);
+}
+
+body[data-expanded-left="true"] .expand-sidebar .expand-arrow {
+  transform: rotate(180deg);
+}
+
+/* Left status panel (hidden by default) */
+.panel-left {
+  display: none;
+  /* Hidden by default to not affect layout */
+  width: var(--left-panel-width);
+  padding: 12px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--accent);
+  overflow: hidden;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+body[data-expanded-left="true"] .panel-left {
+  display: flex;
+  /* Show when expanded */
+}
+
+/* Wider left panel when both are expanded for better model output visibility */
+body[data-expanded-left="true"][data-expanded-bottom="true"] .panel-left {
+  width: 250px;
+}
+
+.panel-left h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.status-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.status-value {
+  color: var(--text-primary);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.status-value.loading {
+  color: var(--warning);
+}
+
+.status-value.ready {
+  color: var(--success);
+}
+
+.status-value.error {
+  color: var(--danger);
+}
+
+/* Quick action buttons in main content (visible when left expanded, bottom collapsed) */
+.quick-actions {
+  display: none;
+  flex-direction: row;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Show quick actions when left is expanded but bottom is not */
+body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
+  display: flex;
+}
+
+.quick-actions .action-btn {
+  flex: 1;
+  padding: 8px 4px;
+  min-width: 0;
+  border: none;
+  background: var(--accent);
+  color: var(--text-primary);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--transition);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-actions .action-btn:hover {
+  background: var(--accent-hover);
+}
+
+.progress-bar {
+  height: 4px;
+  background: var(--bg-secondary);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--success);
+  transition: width var(--transition);
+}
+
+/* Main content area */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-panel);
+  /* Blue background to fill gaps */
+}
+
+/* Header */
+.popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--accent);
+}
+
+.logo-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-container img {
+  width: 32px;
+  height: 32px;
+}
+
+/* Toggle switch */
+.switch {
+  position: relative;
+  width: 44px;
+  height: 22px;
+  display: inline-block;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.switch .slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #4a4a4a;
+  border-radius: 22px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.switch .slider::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  bottom: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: transform var(--transition);
+}
+
+.switch input:checked+.slider {
+  background: var(--success);
+}
+
+.switch input:checked+.slider::before {
+  transform: translateX(22px);
+}
+
+/* Default section - always visible (thresholds) */
+.default-section {
+  padding: 12px;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slider-group label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Range slider - cross-browser */
+.slider-group input[type="range"] {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background: var(--bg-secondary);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.slider-group input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent-hover);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.slider-group input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--accent-hover);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+/* More options section - hidden by default */
+.more-section {
+  max-height: 0;
+  overflow: hidden;
+  padding: 0 12px;
+  background: var(--bg-panel);
+  transition: max-height var(--transition), padding var(--transition);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+body[data-expanded-bottom="true"] .more-section {
+  max-height: 300px;
+  padding: 12px;
+  border-top: 1px solid var(--accent);
+}
+
+/* Checkbox section */
+.checkbox-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.checkbox-section label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: color var(--transition);
+}
+
+.checkbox-section label:hover {
+  color: var(--text-primary);
+}
+
+.checkbox-section input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-hover);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Button section */
+.button-section {
+  display: flex;
+  gap: 8px;
+}
+
+.button-section button {
+  flex: 1;
+  padding: 8px 4px;
+  min-width: 0;
+  border: none;
+  background: var(--accent);
+  color: var(--text-primary);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--transition);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.button-section button:hover {
+  background: var(--accent-hover);
+}
+
+.button-section button:active {
+  transform: scale(0.98);
+}
+
+/* Output panel - inside left panel, visible when bottom expanded */
+.panel-output {
+  display: none;
+  /* Hidden by default */
+  margin-top: auto;
+  /* Push to bottom of left panel */
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius);
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Show output when bottom is expanded (left panel will already be visible) */
+body[data-expanded-bottom="true"] .panel-output {
+  display: flex;
+}
+
+.panel-output h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+}
+
+.output-content {
+  flex: 1;
+  background: var(--bg-secondary);
+  padding: 8px;
+  border-radius: var(--border-radius);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-y: auto;
+  max-height: 120px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+
+/* Footer with expand button */
+.popup-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0 12px;
+  height: var(--footer-height);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--accent);
+  margin-top: auto;
+}
+
+/* Footer toggle button */
+.expand-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.expand-toggle:hover {
+  color: var(--text-primary);
+}
+
+.expand-label {
+  font-weight: 500;
+}
+
+.expand-toggle .expand-arrow {
+  font-size: 10px;
+  transition: transform var(--transition);
+}
+
+body[data-expanded-bottom="true"] .expand-toggle {
+  color: var(--text-primary);
+}
+
+body[data-expanded-bottom="true"] .expand-toggle .expand-arrow {
+  transform: rotate(180deg);
+}
+
+/* Scrollbar styling */
+.output-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.output-content::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+.output-content::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.output-content::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-hover);
+}
+
+/* Firefox scrollbar */
+.output-content {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) var(--bg-primary);
+}

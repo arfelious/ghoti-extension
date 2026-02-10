@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Ghoti Settings</title>
+</head>
+
+<body>
+    <h1>🐟 Ghoti Settings</h1>
+
+    <!-- Stats Overview Card -->
+    <div class="card stats-card">
+        <h2>📊 Statistics Overview</h2>
+        <div class="stats-grid" id="statsOverview">
+            <div class="stat-item">
+                <span class="stat-value" id="statTotalScans">-</span>
+                <span class="stat-label">Total Scans</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value safe" id="statSafeDetected">-</span>
+                <span class="stat-label">Safe Sites</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value danger" id="statPhishingDetected">-</span>
+                <span class="stat-label">Phishing Detected</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="statLocalAnalyses">-</span>
+                <span class="stat-label">Local Analyses</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="statRemoteAnalyses">-</span>
+                <span class="stat-label">Remote Analyses</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="statUploaded">-</span>
+                <span class="stat-label">Results Uploaded</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>⚙️ General</h2>
+        <div class="setting-row">
+            <div>
+                <strong>Auto-Scan on Startup</strong>
+                <div class="setting-desc">Automatically scan all open tabs when the extension starts.</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="autoScan">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <div class="setting-row">
+            <div>
+                <strong>Upload Local Results</strong>
+                <div class="setting-desc">Send local analysis results to the server to help improve detection accuracy.</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="uploadLocalResults">
+                <span class="slider"></span>
+            </label>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>🤖 Model Selection</h2>
+        <div id="modelInfo">Loading...</div>
+        
+        <div class="model-selector">
+            <label for="modelSelect"><strong>Active Model:</strong></label>
+            <select id="modelSelect">
+                <option value="">Loading models...</option>
+            </select>
+            <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
+        </div>
+        
+        <div id="loadProgress" class="progress-container" style="display: none;">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-text" id="progressText">Loading...</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>🧩 Custom Models</h2>
+        <p class="help-text">Add custom models from MLC-AI's HuggingFace repository. Models must be compiled for WebGPU.</p>
+        
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="presets">Preset Models</button>
+            <button class="tab-btn" data-tab="custom">Add Custom</button>
+        </div>
+        
+        <div id="presets-tab" class="tab-content active">
+            <div class="preset-models-list" id="presetModelsList">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+        
+        <div id="custom-tab" class="tab-content">
+            <div class="custom-model-form">
+                <div class="form-group">
+                    <label for="customModelId">Model ID:</label>
+                    <input type="text" id="customModelId" placeholder="e.g., Qwen3-4B-q4f16_1-MLC">
+                </div>
+                <div class="form-group">
+                    <label for="customModelUrl">HuggingFace URL:</label>
+                    <input type="text" id="customModelUrl" placeholder="https://huggingface.co/mlc-ai/...">
+                </div>
+                <div class="form-group">
+                    <label for="customModelLib">WASM Library URL:</label>
+                    <input type="text" id="customModelLib" placeholder="Auto-detected or manual URL">
+                </div>
+                <div class="form-group">
+                    <label for="customModelVram">VRAM Required (MB):</label>
+                    <input type="number" id="customModelVram" placeholder="e.g., 3500" value="0">
+                </div>
+                <div class="form-group">
+                    <label for="customContextSize">Context Window Size:</label>
+                    <input type="number" id="customContextSize" placeholder="e.g., 4096" value="4096">
+                </div>
+                <button id="addCustomModelBtn" class="btn btn-primary">Add Custom Model</button>
+            </div>
+        </div>
+        
+        <h3>Installed Custom Models</h3>
+        <div class="custom-models-list" id="customModelsList">
+            <p class="empty-state">No custom models installed.</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📜 Recent Scans</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Confidence</th>
+                    <th>Source</th>
+                    <th>Date</th>
+                </tr>
+            </thead>
+            <tbody id="recentScansBody">
+                <tr><td colspan="4" class="empty-state">No scans yet</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>🌐 Server Statistics</h2>
+        <div class="stats-grid server-stats" id="serverStats">
+            <div class="stat-item">
+                <span class="stat-value" id="serverTotalSites">-</span>
+                <span class="stat-label">Total Sites</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value danger" id="serverPhishingSites">-</span>
+                <span class="stat-label">Phishing Sites</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value safe" id="serverSafeSites">-</span>
+                <span class="stat-label">Safe Sites</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="serverExtensionAnalyses">-</span>
+                <span class="stat-label">Extension Uploads</span>
+            </div>
+        </div>
+        <button id="refreshServerStats" class="btn btn-secondary">Refresh Server Stats</button>
+    </div>
+
+    <div id="statusMsg" class="status-msg"></div>
+    <script src="settings.js"></script>
+</body>
+
+</html>

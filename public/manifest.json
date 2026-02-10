@@ -1,0 +1,49 @@
+{
+  "name": "Ghoti",
+  "description": "Phishing detector extension with LLM-based analysis",
+  "version": "0.1.0",
+  "manifest_version": 3,
+  "action": {
+    "default_popup": "./index.html",
+    "default_icon": "icons/logo_512.png",
+    "default_title": "Ghoti Phishing Detector"
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/logo_16.png",
+    "48": "icons/logo_48.png",
+    "128": "icons/logo_128.png",
+    "512": "icons/logo_512.png"
+  },
+  "permissions": [
+    "scripting",
+    "tabs",
+    "storage",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "*://*/*",
+    "http://localhost:9701/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "inject.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' ws://localhost:9701 http://localhost:9701 https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.hf.co https://raw.githubusercontent.com"
+  }
+}
