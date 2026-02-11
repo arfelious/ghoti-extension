@@ -16,6 +16,13 @@ const config = (env, argv) =>
       settings: PATHS.src + '/settings.js',
     },
     devtool: argv.mode === 'production' ? false : 'source-map',
+    resolve: {
+      fallback: {
+        url: require.resolve('url'),
+        "perf_hooks": false,
+        "module": false,
+      },
+    },
   });
 
 module.exports = config;

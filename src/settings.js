@@ -2,9 +2,9 @@ import './settings.css';
 import { LLMAdapter, LLM_MESSAGE_TYPES, PRESET_MODELS, createModelFromUrl } from './llm';
 import { DEFAULTS } from './config/defaults.js';
 
-
 // Global LLM adapter instance
 let llm = null;
+let allLogs = []; // Buffer to store all logs for filtering
 
 document.addEventListener('DOMContentLoaded', async () => {
     llm = new LLMAdapter({
@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadServerStats();
     await loadModelInfo();
     await loadAvailableModels();
+    await loadLogs();
     setupEventListeners();
     setupProgressListener();
 });
@@ -23,6 +24,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function loadSettings() {
     const settings = await chrome.storage.sync.get(DEFAULTS);
     document.getElementById('autoScan').checked = settings.autoScanOnStartup;
+    document.getElementById('preloadLLM').checked = settings.preloadLLM;
+    document.getElementById('unloadAfterInactivity').checked = settings.unloadAfterInactivity;
     document.getElementById('uploadLocalResults').checked = settings.uploadLocalResults;
 }
 
@@ -30,7 +33,7 @@ async function loadStats() {
     try {
         const stats = await chrome.runtime.sendMessage({ type: 'GET_STATS' });
 
-        // Update stats overview
+        // Update stats overview (Local stats)
         document.getElementById('statTotalScans').textContent = stats.totalScans || 0;
         document.getElementById('statSafeDetected').textContent = stats.safeDetected || 0;
         document.getElementById('statPhishingDetected').textContent = stats.phishingDetected || 0;
@@ -51,12 +54,10 @@ async function loadServerStats() {
         if (response && response.success && response.stats) {
             document.getElementById('serverTotalSites').textContent = response.stats.totalSites || 0;
             document.getElementById('serverPhishingSites').textContent = response.stats.phishingSites || 0;
-            document.getElementById('serverSafeSites').textContent = response.stats.safeSites || 0;
             document.getElementById('serverExtensionAnalyses').textContent = response.stats.extensionAnalyses || 0;
         } else {
             document.getElementById('serverTotalSites').textContent = '-';
             document.getElementById('serverPhishingSites').textContent = '-';
-            document.getElementById('serverSafeSites').textContent = '-';
             document.getElementById('serverExtensionAnalyses').textContent = '-';
         }
     } catch (e) {
@@ -68,51 +69,128 @@ function renderRecentScans(scans) {
     const tbody = document.getElementById('recentScansBody');
     if (!tbody) return;
 
-    if (scans.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No scans yet</td></tr>';
+    if (!scans || scans.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Henüz tarama yapılmadı</td></tr>';
         return;
     }
 
-    tbody.innerHTML = scans.slice(0, 20).map(scan => {
-        const confidenceClass = scan.confidence <= 30 ? 'confidence-low' :
-            scan.confidence <= 60 ? 'confidence-medium' : 'confidence-high';
-        const sourceClass = scan.source === 'local' ? 'source-local' : 'source-remote';
-        const statusClass = scan.isPhishing ? 'status-phishing' : 'status-safe';
-        const date = new Date(scan.timestamp).toLocaleDateString('tr-TR', {
-            day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+    tbody.innerHTML = scans.slice(0, 50).map(scan => {
+        const confidence = scan.confidence;
+        const confidenceClass = confidence <= 30 ? 'confidence-low' :
+            confidence <= 60 ? 'confidence-medium' : 'confidence-high';
+
+        const sourceMap = {
+            'local': 'Yerel',
+            'remote': 'Genel',
+            'compare': 'Karşılaştırma',
+            'local-fallback': 'Yerel (Yedek)'
+        };
+        const sourceLabel = sourceMap[scan.source] || scan.source;
+
+        // Tooltip for dual confidence
+        let tooltip = '';
+        if (scan.localConfidence !== undefined || scan.remoteConfidence !== undefined) {
+            const local = (scan.localConfidence !== null && scan.localConfidence !== undefined) ? `%${scan.localConfidence}` : '-';
+            const remote = (scan.remoteConfidence !== null && scan.remoteConfidence !== undefined) ? `%${scan.remoteConfidence}` : '-';
+            tooltip = `Yerel: ${local} / Genel: ${remote}`;
+        }
+
+        const date = new Date(scan.timestamp).toLocaleString('tr-TR', {
+            day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
         });
 
         return `
             <tr>
                 <td title="${scan.url}">${scan.domain}</td>
-                <td><span class="confidence-badge ${confidenceClass}">${scan.confidence}%</span></td>
-                <td><span class="source-badge ${sourceClass}">${scan.source}</span></td>
-                <td>${date}</td>
+                <td>
+                    <span class="confidence-badge ${confidenceClass}" data-tooltip="${tooltip}">
+                        %${confidence}
+                    </span>
+                </td>
+                <td><span class="source-badge">${sourceLabel}</span></td>
+                <td style="font-size: 11px; color: var(--text-muted);">${date}</td>
             </tr>
         `;
     }).join('');
+}
+
+async function loadLogs() {
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'GET_LOGS' });
+        if (response && response.logs) {
+            allLogs = response.logs;
+            renderLogs(allLogs);
+        }
+    } catch (e) {
+        console.error('Error loading logs:', e);
+    }
+}
+
+function renderLogs(logs) {
+    const viewer = document.getElementById('logViewer');
+    if (!viewer) return;
+
+    const filter = document.getElementById('logFilter')?.value || 'all';
+    const filteredLogs = filter === 'all' ? logs : logs.filter(l => l.type === filter);
+
+    if (filteredLogs.length === 0) {
+        viewer.innerHTML = `<div class="log-entry">Filtreye uygun log bulunamadı. (${filter})</div>`;
+        return;
+    }
+
+    viewer.innerHTML = filteredLogs.map(log => {
+        const time = new Date(log.timestamp).toLocaleTimeString('tr-TR');
+        return `
+            <div class="log-entry">
+                <span class="log-time">[${time}]</span>
+                <span class="log-type-${log.type}">${log.type.toUpperCase()}:</span>
+                <span class="log-message">${log.message}</span>
+            </div>
+        `;
+    }).join('');
+
+    // Auto scroll to bottom
+    viewer.scrollTop = viewer.scrollHeight;
 }
 
 function setupEventListeners() {
     // General settings
     document.getElementById('autoScan').addEventListener('change', async (e) => {
         await chrome.storage.sync.set({ autoScanOnStartup: e.target.checked });
-        showStatus('Settings saved');
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('preloadLLM').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ preloadLLM: e.target.checked });
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('unloadAfterInactivity').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ unloadAfterInactivity: e.target.checked });
+        showStatus('Ayarlar kaydedildi');
     });
 
     document.getElementById('uploadLocalResults').addEventListener('change', async (e) => {
         await chrome.storage.sync.set({ uploadLocalResults: e.target.checked });
-        showStatus('Settings saved');
+        showStatus('Ayarlar kaydedildi');
     });
 
     // Model selection
     document.getElementById('loadModelBtn').addEventListener('click', handleLoadModel);
 
-    // Tab switching
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+    // Tab switching (Main)
+    document.querySelectorAll('.settings-tabs .tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const tab = e.target.dataset.tab;
             switchTab(tab);
+        });
+    });
+
+    // Sub-tab switching (Model management)
+    document.querySelectorAll('.tabs .tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const subtab = e.target.dataset.subtab;
+            switchSubTab(subtab);
         });
     });
 
@@ -125,8 +203,79 @@ function setupEventListeners() {
     // Refresh server stats
     document.getElementById('refreshServerStats').addEventListener('click', async () => {
         await loadServerStats();
-        showStatus('Server stats refreshed');
+        showStatus('Sunucu istatistikleri yenilendi');
     });
+
+    // Clear scans
+    document.getElementById('clearScansBtn').addEventListener('click', async () => {
+        if (confirm('Tüm tarama geçmişini temizlemek istediğinize emin misiniz?')) {
+            await chrome.runtime.sendMessage({ type: 'CLEAR_STATS' });
+            await loadStats();
+            showStatus('Geçmiş temizlendi');
+        }
+    });
+
+    // Log controls
+    document.getElementById('clearLogsBtn').addEventListener('click', () => {
+        allLogs = [];
+        document.getElementById('logViewer').innerHTML = '<div class="log-entry">Loglar temizlendi.</div>';
+    });
+
+    document.getElementById('logFilter').addEventListener('change', () => {
+        renderLogs(allLogs);
+    });
+
+    document.getElementById('downloadLogsBtn').addEventListener('click', downloadLogs);
+
+    // Event delegation for dynamically added buttons (CSP fix)
+    document.addEventListener('click', (e) => {
+        // Handle preset model add
+        const addPresetBtn = e.target.closest('[data-action="add-preset"]');
+        if (addPresetBtn) {
+            const modelId = addPresetBtn.dataset.modelId;
+            window.addPresetModel(modelId);
+        }
+
+        // Handle custom model remove
+        const removeCustomBtn = e.target.closest('[data-action="remove-custom"]');
+        if (removeCustomBtn) {
+            const modelId = removeCustomBtn.dataset.modelId;
+            window.removeCustomModel(modelId);
+        }
+    });
+}
+
+function downloadLogs() {
+    try {
+        const filter = document.getElementById('logFilter').value;
+        const filteredLogs = filter === 'all' ? allLogs : allLogs.filter(l => l.type === filter);
+
+        if (filteredLogs.length === 0) {
+            showStatus('İndirilecek log bulunamadı', 'error');
+            return;
+        }
+
+        const logText = filteredLogs.map(l => {
+            const time = new Date(l.timestamp).toLocaleString('tr-TR');
+            return `[${time}] ${l.type.toUpperCase()}: ${l.message}`;
+        }).join('\n');
+
+        const blob = new Blob([logText], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const date = new Date().toISOString().split('T')[0];
+        a.href = url;
+        a.download = `ghoti_logs_${date}_${filter}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showStatus('Loglar indirildi');
+    } catch (e) {
+        console.error('Download error:', e);
+        showStatus('Loglar indirilemedi', 'error');
+    }
 }
 
 function setupProgressListener() {
@@ -134,24 +283,65 @@ function setupProgressListener() {
     const runtime = typeof browser !== 'undefined' ? browser.runtime : chrome.runtime;
     runtime.onMessage.addListener((message) => {
         if (message.type === LLM_MESSAGE_TYPES.INIT_PROGRESS) {
-            updateProgress(message.progress, message.text);
+            const activityText = message.activity === 'downloading' ? 'Model indiriliyor...' : 'Model yükleniyor...';
+            updateProgress(message.progress, `${activityText}`);
         } else if (message.type === LLM_MESSAGE_TYPES.INIT_COMPLETE) {
             hideProgress();
             loadModelInfo();
-            showStatus('Model loaded successfully!');
+            showStatus('Model başarıyla yüklendi!');
+        } else if (message.type === 'LOG_ENTRY') {
+            allLogs.push(message.log);
+            if (allLogs.length > 100) allLogs.shift(); // Sync with MAX_LOGS in background
+            appendLog(message.log);
         }
     });
 }
 
+function appendLog(log) {
+    const viewer = document.getElementById('logViewer');
+    if (!viewer) return;
+
+    // Respect filter
+    const filter = document.getElementById('logFilter')?.value || 'all';
+    if (filter !== 'all' && log.type !== filter) return;
+
+    const div = document.createElement('div');
+    div.className = 'log-entry';
+    const time = new Date(log.timestamp).toLocaleTimeString('tr-TR');
+    div.innerHTML = `
+        <span class="log-time">[${time}]</span>
+        <span class="log-type-${log.type}">${log.type.toUpperCase()}:</span>
+        <span class="log-message">${log.message}</span>
+    `;
+    viewer.appendChild(div);
+
+    // Auto scroll if at bottom
+    if (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 50) {
+        viewer.scrollTop = viewer.scrollHeight;
+    }
+}
+
 function switchTab(tabName) {
     // Update tab buttons
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+    document.querySelectorAll('.settings-tabs .tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tabName);
     });
 
     // Update tab content
     document.querySelectorAll('.tab-content').forEach(content => {
         content.classList.toggle('active', content.id === `${tabName}-tab`);
+    });
+}
+
+function switchSubTab(subtabName) {
+    // Update subtab buttons
+    document.querySelectorAll('.tabs .tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.subtab === subtabName);
+    });
+
+    // Update subtab content
+    document.querySelectorAll('.subtab-content').forEach(content => {
+        content.style.display = content.id === `${subtabName}-subtab` ? 'block' : 'none';
     });
 }
 
@@ -162,16 +352,22 @@ async function loadModelInfo() {
     try {
         const status = await llm.getStatus();
         const statusClass = getStatusClass(status.status);
+        const statusLabels = {
+            'ready': 'Hazır',
+            'loading': 'Yükleniyor',
+            'error': 'Hata',
+            'uninitialized': 'Başlatılmadı'
+        };
 
         modelInfoDiv.innerHTML = `
             <div class="model-status">
-                <p><strong>Current Model:</strong> ${status.modelId || 'None loaded'}</p>
-                <p><strong>Status:</strong> <span class="status-badge ${statusClass}">${status.status}</span></p>
-                <p><strong>Engine:</strong> Web-LLM (MLC)</p>
+                <p><strong>Aktif Model:</strong> ${status.modelId || 'Yüklü model yok'}</p>
+                <p><strong>Durum:</strong> <span class="status-badge ${statusClass}">${statusLabels[status.status] || status.status}</span></p>
+                <p><strong>Motor:</strong> Web-LLM (MLC)</p>
             </div>
         `;
     } catch (e) {
-        modelInfoDiv.innerHTML = `<p class="error">Could not load model info: ${e.message}</p>`;
+        modelInfoDiv.innerHTML = `<p class="error">Model bilgileri yüklenemedi: ${e.message}</p>`;
     }
 }
 
@@ -184,7 +380,7 @@ function getStatusClass(status) {
     }
 }
 
-function updateModelStatus(status) {
+function updateModelStatus() {
     loadModelInfo();
 }
 
@@ -203,7 +399,7 @@ async function loadAvailableModels() {
         // Add custom models first
         if (custom.length > 0) {
             const customGroup = document.createElement('optgroup');
-            customGroup.label = 'Custom Models';
+            customGroup.label = 'Özel Modeller';
             custom.forEach(model => {
                 const option = document.createElement('option');
                 option.value = model.model_id;
@@ -216,7 +412,7 @@ async function loadAvailableModels() {
 
         // Add preset models
         const presetGroup = document.createElement('optgroup');
-        presetGroup.label = 'Preset Models';
+        presetGroup.label = 'Hazır Modeller';
         PRESET_MODELS.forEach(model => {
             const option = document.createElement('option');
             option.value = model.model_id;
@@ -234,7 +430,7 @@ async function loadAvailableModels() {
 
     } catch (e) {
         console.error('Error loading models:', e);
-        modelSelect.innerHTML = '<option value="">Error loading models</option>';
+        modelSelect.innerHTML = '<option value="">Modeller yüklenemedi</option>';
     }
 }
 
@@ -244,21 +440,21 @@ function renderPresetModels(container, presets, customModels) {
     container.innerHTML = PRESET_MODELS.map(model => {
         const isInstalled = customIds.has(model.model_id);
         return `
-            <div class="model-item ${isInstalled ? 'installed' : ''}">
+            <div class="model-card ${isInstalled ? 'installed' : ''}">
                 <div class="model-info">
-                    <strong>${model.model_id}</strong>
-                    <span class="model-meta">
+                    <div class="model-name">${model.model_id}</div>
+                    <div class="model-meta">
                         ${model.vram_required_MB}MB VRAM
-                        ${model.low_resource_required ? ' • Low Resource' : ''}
-                    </span>
+                        ${model.low_resource_required ? ' • Düşük Kaynak' : ''}
+                    </div>
                 </div>
                 <button 
-                    class="btn btn-small ${isInstalled ? 'btn-disabled' : 'btn-secondary'}"
+                    class="btn ${isInstalled ? 'btn-secondary' : 'btn-primary'}"
+                    data-action="add-preset"
                     data-model-id="${model.model_id}"
                     ${isInstalled ? 'disabled' : ''}
-                    onclick="addPresetModel('${model.model_id}')"
                 >
-                    ${isInstalled ? 'Installed' : 'Add'}
+                    ${isInstalled ? 'Yüklendi' : 'Ekle'}
                 </button>
             </div>
         `;
@@ -267,52 +463,51 @@ function renderPresetModels(container, presets, customModels) {
 
 function renderCustomModels(container, customModels) {
     if (customModels.length === 0) {
-        container.innerHTML = '<p class="empty-state">No custom models installed.</p>';
+        container.innerHTML = '<p class="empty-state">Yüklü özel model bulunamadı.</p>';
         return;
     }
 
     container.innerHTML = customModels.map(model => `
-        <div class="model-item custom">
+        <div class="model-card custom">
             <div class="model-info">
-                <strong>${model.model_id}</strong>
-                <span class="model-meta">
+                <div class="model-name">${model.model_id}</div>
+                <div class="model-meta">
                     ${model.vram_required_MB || '?'}MB VRAM
-                    ${model.isCustom ? ' • Custom' : ''}
-                </span>
+                </div>
             </div>
             <button 
-                class="btn btn-small btn-danger"
-                onclick="removeCustomModel('${model.model_id}')"
+                class="btn btn-danger"
+                data-action="remove-custom"
+                data-model-id="${model.model_id}"
             >
-                Remove
+                Kaldır
             </button>
         </div>
     `).join('');
 }
 
-// Global functions for inline onclick handlers
 window.addPresetModel = async function (modelId) {
     try {
         const preset = PRESET_MODELS.find(m => m.model_id === modelId);
-        if (!preset) throw new Error('Preset not found');
+        if (!preset) throw new Error('Model bulunamadı');
 
         await llm.addCustomModel({ ...preset });
-        showStatus(`Added ${modelId}`);
+        showStatus(`${modelId} eklendi`);
         await loadAvailableModels();
     } catch (e) {
-        showStatus(`Error: ${e.message}`, 'error');
+        showStatus(`Hata: ${e.message}`, 'error');
     }
 };
 
 window.removeCustomModel = async function (modelId) {
-    if (!confirm(`Remove model "${modelId}"?`)) return;
+    if (!confirm(`"${modelId}" modelini kaldırmak istediğinize emin misiniz?`)) return;
 
     try {
         await llm.removeCustomModel(modelId);
-        showStatus(`Removed ${modelId}`);
+        showStatus(`${modelId} kaldırıldı`);
         await loadAvailableModels();
     } catch (e) {
-        showStatus(`Error: ${e.message}`, 'error');
+        showStatus(`Hata: ${e.message}`, 'error');
     }
 };
 
@@ -321,7 +516,7 @@ async function handleLoadModel() {
     const modelId = modelSelect.value;
 
     if (!modelId) {
-        showStatus('Please select a model', 'error');
+        showStatus('Lütfen bir model seçin', 'error');
         return;
     }
 
@@ -331,7 +526,7 @@ async function handleLoadModel() {
         await llm.reloadModel(modelId);
     } catch (e) {
         hideProgress();
-        showStatus(`Error loading model: ${e.message}`, 'error');
+        showStatus(`Model yüklenirken hata: ${e.message}`, 'error');
     }
 }
 
@@ -346,16 +541,10 @@ function handleModelUrlBlur() {
     try {
         const modelRecord = createModelFromUrl(url);
 
-        // Auto-fill if empty
-        if (!modelIdInput.value) {
-            modelIdInput.value = modelRecord.model_id;
-        }
-        if (!modelLibInput.value) {
-            modelLibInput.value = modelRecord.model_lib;
-        }
+        if (!modelIdInput.value) modelIdInput.value = modelRecord.model_id;
+        if (!modelLibInput.value) modelLibInput.value = modelRecord.model_lib;
     } catch (e) {
-        // Ignore errors - user can fill manually
-        console.log('Could not auto-detect model details:', e.message);
+        console.log('Model detayları algılanamadı:', e.message);
     }
 }
 
@@ -367,7 +556,7 @@ async function handleAddCustomModel() {
     const contextSize = parseInt(document.getElementById('customContextSize').value) || 4096;
 
     if (!modelId || !modelUrl || !modelLib) {
-        showStatus('Please fill in Model ID, HuggingFace URL, and WASM Library URL', 'error');
+        showStatus('Lütfen tüm gerekli alanları doldurun', 'error');
         return;
     }
 
@@ -380,9 +569,8 @@ async function handleAddCustomModel() {
             overrides: { context_window_size: contextSize },
         });
 
-        showStatus(`Added custom model: ${modelId}`);
+        showStatus(`Özel model eklendi: ${modelId}`);
 
-        // Clear form
         document.getElementById('customModelId').value = '';
         document.getElementById('customModelUrl').value = '';
         document.getElementById('customModelLib').value = '';
@@ -391,14 +579,14 @@ async function handleAddCustomModel() {
 
         await loadAvailableModels();
     } catch (e) {
-        showStatus(`Error: ${e.message}`, 'error');
+        showStatus(`Hata: ${e.message}`, 'error');
     }
 }
 
 function showProgress() {
     const container = document.getElementById('loadProgress');
     container.style.display = 'block';
-    updateProgress(0, 'Starting...');
+    updateProgress(0, 'Başlatılıyor...');
 }
 
 function hideProgress() {
@@ -409,18 +597,19 @@ function hideProgress() {
 function updateProgress(progress, text) {
     const fill = document.getElementById('progressFill');
     const textEl = document.getElementById('progressText');
+    const percentEl = document.getElementById('progressPercent');
 
     const percent = Math.round(progress * 100);
     fill.style.width = `${percent}%`;
-    textEl.textContent = text || `Loading... ${percent}%`;
+    textEl.textContent = text || `Yükleniyor...`;
+    percentEl.textContent = `%${percent}`;
 }
 
 function showStatus(msg, type = 'success') {
     const el = document.getElementById('statusMsg');
     if (el) {
         el.textContent = msg;
-        el.className = `status-msg ${type === 'error' ? 'error' : ''}`;
-        el.style.opacity = 1;
-        setTimeout(() => el.style.opacity = 0, 3000);
+        el.className = `status-msg ${type === 'error' ? 'error' : ''} show`;
+        setTimeout(() => el.classList.remove('show'), 3000);
     }
 }

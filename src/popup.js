@@ -13,12 +13,14 @@ const LLM_MESSAGE_TYPES = {
 };
 
 // State
-let lastModelOutput = null;
+let currentScanResult = null;
+let currentOutputSource = 'remote'; // 'remote' or 'local'
 
 document.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
     setupEventListeners();
     setupLLMStatusPolling();
+    fetchInitialScanResult(); // Fetch result of current page if already analyzed
 });
 
 /**
@@ -123,6 +125,9 @@ function setupEventListeners() {
     document.getElementById('btn-report-quick').addEventListener('click', reportPage);
     document.getElementById('btn-rescan-quick').addEventListener('click', rescanPage);
     document.getElementById('btn-settings-quick').addEventListener('click', openSettings);
+
+    // Output toggle
+    document.getElementById('toggle-output-source').addEventListener('click', toggleOutputSource);
 }
 
 /**
@@ -208,11 +213,70 @@ function setupLLMStatusPolling() {
     // Listen for progress updates from background
     chrome.runtime.onMessage.addListener((message) => {
         if (message.type === LLM_MESSAGE_TYPES.INIT_PROGRESS) {
-            updateProgressBar(message.progress);
+            updateProgressBar(message.progress, 'loading');
+
+            // Update status text based on activity (downloading vs loading)
+            const statusEl = document.getElementById('llm-status');
+            if (statusEl && message.activity) {
+                statusEl.textContent = message.activity === 'downloading' ? 'İndiriliyor...' : 'Yükleniyor...';
+                statusEl.className = 'status-value loading';
+            }
         } else if (message.type === LLM_MESSAGE_TYPES.INIT_COMPLETE) {
             updateLLMStatus();
+        } else if (message.type === 'SCAN_PROGRESS') {
+            const pageStatusEl = document.getElementById('page-status');
+            if (pageStatusEl) {
+                pageStatusEl.textContent = message.message;
+                pageStatusEl.className = 'status-value loading';
+            }
+        } else if (message.type === 'SCAN_COMPLETE') {
+            // Get current active tab to ensure result is for this page
+            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+                if (tab && message.tabId === tab.id) {
+                    console.log('[Ghoti Popup] Scan complete received for current tab');
+                    const domain = new URL(tab.url).hostname;
+                    updateModelOutput(message.result, domain);
+                    const pageStatusEl = document.getElementById('page-status');
+                    if (pageStatusEl) {
+                        pageStatusEl.textContent = 'Tamamlandı';
+                        pageStatusEl.className = 'status-value ready';
+                    }
+                }
+            });
         }
     });
+}
+
+/**
+ * Fetch initial scan result from content script
+ */
+async function fetchInitialScanResult() {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.url.startsWith('http')) return;
+
+        console.log('[Ghoti Popup] Requesting initial scan result from tab:', tab.id);
+        chrome.tabs.sendMessage(tab.id, { type: 'GET_SCAN_RESULT' }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.log('[Ghoti Popup] Content script not ready or no result');
+                return;
+            }
+
+            if (response && response.success && response.result) {
+                console.log('[Ghoti Popup] Initial result received:', response.result);
+                const domain = new URL(tab.url).hostname;
+                updateModelOutput(response.result, domain);
+
+                const pageStatusEl = document.getElementById('page-status');
+                if (pageStatusEl) {
+                    pageStatusEl.textContent = 'Tamamlandı';
+                    pageStatusEl.className = 'status-value ready';
+                }
+            }
+        });
+    } catch (e) {
+        console.warn('[Ghoti Popup] Failed to fetch initial scan result:', e);
+    }
 }
 
 /**
@@ -242,7 +306,7 @@ async function updateLLMStatus() {
 
             // Update progress bar
             if (response.loadProgress !== undefined) {
-                updateProgressBar(response.loadProgress);
+                updateProgressBar(response.loadProgress, response.status);
             }
         }
     } catch (error) {
@@ -255,10 +319,17 @@ async function updateLLMStatus() {
 /**
  * Update progress bar
  */
-function updateProgressBar(progress) {
+function updateProgressBar(progress, status) {
     const progressEl = document.getElementById('load-progress');
     if (progressEl) {
         progressEl.style.width = `${(progress * 100)}%`;
+
+        // Disable animation if already ready to prevent "filling up" on popup open
+        if (status === 'ready' || progress >= 1) {
+            progressEl.classList.add('ready');
+        } else {
+            progressEl.classList.remove('ready');
+        }
     }
 }
 
@@ -277,17 +348,53 @@ function formatStatus(status) {
 }
 
 /**
+ * Toggle model output source (Yerel vs Genel)
+ */
+function toggleOutputSource() {
+    currentOutputSource = currentOutputSource === 'remote' ? 'local' : 'remote';
+
+    // Update title
+    const titleEl = document.getElementById('output-title');
+    if (titleEl) {
+        titleEl.textContent = currentOutputSource === 'remote' ? 'Son Genel Çıktı' : 'Son Yerel Çıktı';
+    }
+
+    // Refresh display
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+        const domain = tab ? new URL(tab.url).hostname : null;
+        updateModelOutput(currentScanResult, domain);
+    });
+}
+
+/**
  * Update model output display
  */
-function updateModelOutput(output) {
-    lastModelOutput = output;
+function updateModelOutput(result, domain = null) {
+    if (!result) return;
+    currentScanResult = result;
+
     const outputEl = document.getElementById('model-output');
     if (outputEl) {
-        if (typeof output === 'object') {
-            outputEl.textContent = JSON.stringify(output, null, 2);
-        } else {
-            outputEl.textContent = output || 'Henüz çıktı yok';
+        let content = null;
+        let sourceData = currentOutputSource === 'remote' ? result.queryResult : result.localResult;
+
+        // Auto-switch to local if remote is requested but missing
+        if (currentOutputSource === 'remote' && !result.queryResult && result.localResult) {
+            console.log('[Ghoti Popup] Remote result missing, showing local fallback');
+            sourceData = result.localResult;
+            // Optionally update UI to show it's local
+            const titleEl = document.getElementById('output-title');
+            if (titleEl) titleEl.textContent = 'Son Yerel Çıktı (Otomatik)';
         }
+
+        if (sourceData) {
+            const response = sourceData.response || sourceData.reasoning || "";
+            const rating = sourceData.finalRating !== undefined ? `Risk: %${sourceData.finalRating}\n\n` : "";
+            const domainHeader = domain ? `${domain}\n-------------------\n` : "";
+            content = response ? `${domainHeader}${rating}${response}` : null;
+        }
+
+        outputEl.textContent = content || (currentOutputSource === 'remote' ? 'Genel analiz yapılmadı' : 'Yerel analiz yapılmadı');
     }
 }
 

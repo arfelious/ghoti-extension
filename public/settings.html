@@ -1,177 +1,265 @@
 <!DOCTYPE html>
-<html>
+<html lang="tr">
 
 <head>
     <meta charset="UTF-8">
-    <title>Ghoti Settings</title>
+    <title>Ghoti - Ayarlar</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="settings.css">
 </head>
 
 <body>
-    <h1>🐟 Ghoti Settings</h1>
+    <div class="container">
+        <header>
+            <h1>🐟 Ghoti - Ayarlar</h1>
+        </header>
 
-    <!-- Stats Overview Card -->
-    <div class="card stats-card">
-        <h2>📊 Statistics Overview</h2>
-        <div class="stats-grid" id="statsOverview">
-            <div class="stat-item">
-                <span class="stat-value" id="statTotalScans">-</span>
-                <span class="stat-label">Total Scans</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value safe" id="statSafeDetected">-</span>
-                <span class="stat-label">Safe Sites</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value danger" id="statPhishingDetected">-</span>
-                <span class="stat-label">Phishing Detected</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value" id="statLocalAnalyses">-</span>
-                <span class="stat-label">Local Analyses</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value" id="statRemoteAnalyses">-</span>
-                <span class="stat-label">Remote Analyses</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value" id="statUploaded">-</span>
-                <span class="stat-label">Results Uploaded</span>
-            </div>
-        </div>
-    </div>
+        <nav class="settings-tabs">
+            <button class="tab-btn active" data-tab="general">⚙️ Genel</button>
+            <button class="tab-btn" data-tab="model">🤖 Model</button>
+            <button class="tab-btn" data-tab="logs">📜 Loglar</button>
+            <button class="tab-btn" data-tab="stats">📊 İstatistikler</button>
+        </nav>
 
-    <div class="card">
-        <h2>⚙️ General</h2>
-        <div class="setting-row">
-            <div>
-                <strong>Auto-Scan on Startup</strong>
-                <div class="setting-desc">Automatically scan all open tabs when the extension starts.</div>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="autoScan">
-                <span class="slider"></span>
-            </label>
-        </div>
-        <div class="setting-row">
-            <div>
-                <strong>Upload Local Results</strong>
-                <div class="setting-desc">Send local analysis results to the server to help improve detection accuracy.</div>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="uploadLocalResults">
-                <span class="slider"></span>
-            </label>
-        </div>
-    </div>
+        <!-- Genel Ayarlar Tab -->
+        <main id="general-tab" class="tab-content active">
+            <div class="card">
+                <h2>⚙️ Genel Ayarlar</h2>
 
-    <div class="card">
-        <h2>🤖 Model Selection</h2>
-        <div id="modelInfo">Loading...</div>
-        
-        <div class="model-selector">
-            <label for="modelSelect"><strong>Active Model:</strong></label>
-            <select id="modelSelect">
-                <option value="">Loading models...</option>
-            </select>
-            <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
-        </div>
-        
-        <div id="loadProgress" class="progress-container" style="display: none;">
-            <div class="progress-bar">
-                <div class="progress-fill" id="progressFill"></div>
-            </div>
-            <div class="progress-text" id="progressText">Loading...</div>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>🧩 Custom Models</h2>
-        <p class="help-text">Add custom models from MLC-AI's HuggingFace repository. Models must be compiled for WebGPU.</p>
-        
-        <div class="tabs">
-            <button class="tab-btn active" data-tab="presets">Preset Models</button>
-            <button class="tab-btn" data-tab="custom">Add Custom</button>
-        </div>
-        
-        <div id="presets-tab" class="tab-content active">
-            <div class="preset-models-list" id="presetModelsList">
-                <!-- Populated by JS -->
-            </div>
-        </div>
-        
-        <div id="custom-tab" class="tab-content">
-            <div class="custom-model-form">
-                <div class="form-group">
-                    <label for="customModelId">Model ID:</label>
-                    <input type="text" id="customModelId" placeholder="e.g., Qwen3-4B-q4f16_1-MLC">
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Başlangıçta Otomatik Tara</span>
+                        <div class="setting-desc">Uzantı başladığında tüm açık sekmeleri otomatik olarak tara.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="autoScan">
+                        <span class="slider"></span>
+                    </label>
                 </div>
-                <div class="form-group">
-                    <label for="customModelUrl">HuggingFace URL:</label>
-                    <input type="text" id="customModelUrl" placeholder="https://huggingface.co/mlc-ai/...">
-                </div>
-                <div class="form-group">
-                    <label for="customModelLib">WASM Library URL:</label>
-                    <input type="text" id="customModelLib" placeholder="Auto-detected or manual URL">
-                </div>
-                <div class="form-group">
-                    <label for="customModelVram">VRAM Required (MB):</label>
-                    <input type="number" id="customModelVram" placeholder="e.g., 3500" value="0">
-                </div>
-                <div class="form-group">
-                    <label for="customContextSize">Context Window Size:</label>
-                    <input type="number" id="customContextSize" placeholder="e.g., 4096" value="4096">
-                </div>
-                <button id="addCustomModelBtn" class="btn btn-primary">Add Custom Model</button>
-            </div>
-        </div>
-        
-        <h3>Installed Custom Models</h3>
-        <div class="custom-models-list" id="customModelsList">
-            <p class="empty-state">No custom models installed.</p>
-        </div>
-    </div>
 
-    <div class="card">
-        <h2>📜 Recent Scans</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Domain</th>
-                    <th>Confidence</th>
-                    <th>Source</th>
-                    <th>Date</th>
-                </tr>
-            </thead>
-            <tbody id="recentScansBody">
-                <tr><td colspan="4" class="empty-state">No scans yet</td></tr>
-            </tbody>
-        </table>
-    </div>
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Başlangıçta Modeli Hazırla</span>
+                        <div class="setting-desc">İlk taramanın daha hızlı olması için tarayıcı başladığında AI modelini
+                            arka planda belleğe yükler.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="preloadLLM">
+                        <span class="slider"></span>
+                    </label>
+                </div>
 
-    <div class="card">
-        <h2>🌐 Server Statistics</h2>
-        <div class="stats-grid server-stats" id="serverStats">
-            <div class="stat-item">
-                <span class="stat-value" id="serverTotalSites">-</span>
-                <span class="stat-label">Total Sites</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value danger" id="serverPhishingSites">-</span>
-                <span class="stat-label">Phishing Sites</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value safe" id="serverSafeSites">-</span>
-                <span class="stat-label">Safe Sites</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-value" id="serverExtensionAnalyses">-</span>
-                <span class="stat-label">Extension Uploads</span>
-            </div>
-        </div>
-        <button id="refreshServerStats" class="btn btn-secondary">Refresh Server Stats</button>
-    </div>
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Eylemsizlik Durumunda Modeli Geçici Olarak Devre Dışı Bırak</span>
+                        <div class="setting-desc">Bellek tasarrufu için 30 dakika eylemsizlikten sonra AI modelini
+                            bellekten çıkartır.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="unloadAfterInactivity">
+                        <span class="slider"></span>
+                    </label>
+                </div>
 
-    <div id="statusMsg" class="status-msg"></div>
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Yerel Sonuçları Paylaş</span>
+                        <div class="setting-desc">Taramaları geliştirmek için yerel analiz sonuçlarını sunucuya
+                            gönderir.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="uploadLocalResults">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+        </main>
+
+        <!-- Model Tab -->
+        <main id="model-tab" class="tab-content">
+            <div class="card">
+                <h2>🤖 Aktif Model</h2>
+                <div id="modelInfo">Yükleniyor...</div>
+
+                <div class="form-group" style="margin-top: 20px;">
+                    <label for="modelSelect">Model Seçimi:</label>
+                    <div style="display: flex; gap: 10px;">
+                        <select id="modelSelect">
+                            <option value="">Modeller yükleniyor...</option>
+                        </select>
+                        <button id="loadModelBtn" class="btn btn-primary">Yükle</button>
+                    </div>
+                </div>
+
+                <div id="loadProgress" class="progress-container" style="display: none;">
+                    <div class="progress-label">
+                        <span id="progressText">Yükleniyor...</span>
+                        <span id="progressPercent">%0</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🧩 Model Yönetimi</h2>
+                <div class="tabs" style="margin-bottom: 20px;">
+                    <button class="tab-btn active" data-subtab="presets" style="font-size: 12px; padding: 8px;">Hazır
+                        Modeller</button>
+                    <button class="tab-btn" data-subtab="custom" style="font-size: 12px; padding: 8px;">Özel
+                        Ekle</button>
+                </div>
+
+                <div id="presets-subtab" class="subtab-content">
+                    <div class="preset-models-list model-grid" id="presetModelsList">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <div id="custom-subtab" class="subtab-content" style="display: none;">
+                    <div class="custom-model-form">
+                        <div class="form-group">
+                            <label for="customModelId">Model Kimliği (ID):</label>
+                            <input type="text" id="customModelId" placeholder="Örn: Qwen3-4B-q4f16_1-MLC">
+                        </div>
+                        <div class="form-group">
+                            <label for="customModelUrl">HuggingFace URL:</label>
+                            <input type="text" id="customModelUrl" placeholder="https://huggingface.co/mlc-ai/...">
+                        </div>
+                        <div class="form-group">
+                            <label for="customModelLib">WASM Kütüphane URL:</label>
+                            <input type="text" id="customModelLib" placeholder="Otomatik algılanır veya manuel girin">
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div class="form-group">
+                                <label for="customModelVram">Gerekli VRAM (MB):</label>
+                                <input type="number" id="customModelVram" value="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="customContextSize">Bağlam Boyutu (Context):</label>
+                                <input type="number" id="customContextSize" value="4096">
+                            </div>
+                        </div>
+                        <button id="addCustomModelBtn" class="btn btn-primary" style="width: 100%;">Özel Modeli
+                            Ekle</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>📦 Yüklü Özel Modeller</h2>
+                <div class="custom-models-list model-grid" id="customModelsList">
+                    <p class="empty-state">Yüklü özel model bulunamadı.</p>
+                </div>
+            </div>
+        </main>
+
+        <!-- Logs Tab -->
+        <main id="logs-tab" class="tab-content">
+            <div class="card">
+                <h2>📜 Sistem Logları</h2>
+                <div class="log-viewer" id="logViewer">
+                    <div class="log-entry">Loglar bekleniyor...</div>
+                </div>
+                <div style="margin-top:15px; display:flex; gap:10px; align-items: center;">
+                    <div class="form-group" style="margin-bottom: 0; flex: 1;">
+                        <select id="logFilter" style="padding: 8px; font-size: 12px; width: auto;">
+                            <option value="all">Tüm Loglar</option>
+                            <option value="info">Bilgi (Info)</option>
+                            <option value="warn">Uyarı (Warn)</option>
+                            <option value="error">Hata (Error)</option>
+                        </select>
+                    </div>
+                    <button id="clearLogsBtn" class="btn btn-secondary">Temizle</button>
+                    <button id="downloadLogsBtn" class="btn btn-secondary">İndir</button>
+                </div>
+            </div>
+        </main>
+
+        <!-- İstatistikler Tab -->
+        <main id="stats-tab" class="tab-content">
+            <div class="card">
+                <h2>📈 Genel Kullanım</h2>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <span class="stat-value" id="statTotalScans">-</span>
+                        <span class="stat-label">Toplam Tarama</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value safe" id="statSafeDetected">-</span>
+                        <span class="stat-label">Güvenli Siteler</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value danger" id="statPhishingDetected">-</span>
+                        <span class="stat-label">Phishing Tespit</span>
+                    </div>
+                </div>
+
+                <div class="stats-grid" style="margin-top: 15px;">
+                    <div class="stat-item">
+                        <span class="stat-value" id="statLocalAnalyses">-</span>
+                        <span class="stat-label">Yerel Analiz</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value" id="statRemoteAnalyses">-</span>
+                        <span class="stat-label">Genel Analiz</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value" id="statUploaded">-</span>
+                        <span class="stat-label">Paylaşılan Sonuç</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🌍 Sunucu İstatistikleri</h2>
+                <div class="stats-grid server-stats" id="serverStats">
+                    <div class="stat-item">
+                        <span class="stat-value" id="serverTotalSites">-</span>
+                        <span class="stat-label">Toplam Site</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value danger" id="serverPhishingSites">-</span>
+                        <span class="stat-label">Phishing Veritabanı</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value" id="serverExtensionAnalyses">-</span>
+                        <span class="stat-label">Paylaşılan Uzantı Analizleri</span>
+                    </div>
+                </div>
+                <button id="refreshServerStats" class="btn btn-secondary" style="margin-top:15px; width: 100%;">Sunucu
+                    Verilerini Yenile</button>
+            </div>
+
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin-bottom: 0;">🔍 Son Taramalar</h2>
+                    <button id="clearScansBtn" class="btn btn-danger btn-small"
+                        style="padding: 5px 12px; font-size: 11px;">Tarama Geçmişini Temizle</button>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Alan Adı</th>
+                                <th>Phishing Confidence</th>
+                                <th>Kaynak</th>
+                                <th>Tarih</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentScansBody">
+                            <tr>
+                                <td colspan="4" class="empty-state">Henüz tarama yapılmadı</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+
+        <div id="statusMsg" class="status-msg"></div>
+    </div>
     <script src="settings.js"></script>
 </body>
 

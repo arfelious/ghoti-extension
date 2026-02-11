@@ -5,13 +5,134 @@ const REMOTE_SUBMIT_RESULT = "http://localhost:9701/submit-result";
 const REMOTE_STATS = "http://localhost:9701/stats";
 const whitelistDbName = 'GhotiDefaultWL';
 import { createLLMHandler, LLM_MESSAGE_TYPES } from './llm';
-import { buildSimplePrompt, PHISHING_SCHEMA } from 'shared/prompt-builder.js';
+import { buildSimplePrompt, buildLocalReasoningPrompt, buildLocalScoringPrompt, PHISHING_SCHEMA } from 'shared/prompt-builder.js';
+import { DEFAULTS } from './config/defaults.js';
+
+// Logging buffer for Settings page
+const MAX_LOGS = 100;
+const logBuffer = [];
+let SESSION_NONCE = null;
+
+async function initSessionNonce() {
+    const data = await chrome.storage.local.get('SESSION_NONCE');
+    if (data.SESSION_NONCE) {
+        SESSION_NONCE = data.SESSION_NONCE;
+        console.log(`[Ghoti Background] Restored Session Nonce: ${SESSION_NONCE}`);
+    } else {
+        SESSION_NONCE = Math.random().toString(36).substring(2, 15);
+        await chrome.storage.local.set({ SESSION_NONCE });
+        console.log(`[Ghoti Background] Generated New Session Nonce: ${SESSION_NONCE}`);
+    }
+
+    // Sync with server
+    try {
+        const response = await fetch("http://localhost:9701/register-session", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nonce: SESSION_NONCE })
+        });
+        if (response.ok) {
+            console.log('[Ghoti Background] Session registered with server');
+        }
+    } catch (e) {
+        console.warn('[Ghoti Background] Failed to register session with server:', e.message);
+    }
+}
+
+function generateScanId() {
+    return `${SESSION_NONCE}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function addBufferedLog(type, message) {
+    // Privacy filter: Do not log messages that look like huge prompts
+    // Prompts usually have many newlines and instructions
+    if (typeof message === 'string') {
+        const newlineCount = (message.match(/\n/g) || []).length;
+        if (newlineCount > 10 || message.length > 2000) {
+            // Check for common prompt keywords to be sure
+            const promptKeywords = ['system', 'user', 'assistant', 'phishing', 'score', 'reasoning'];
+            const lowerMsg = message.toLowerCase();
+            const hasKeywords = promptKeywords.filter(k => lowerMsg.includes(k)).length >= 2;
+
+            if (hasKeywords || newlineCount > 20) {
+                // Log a placeholder instead
+                message = `[Prompt Filtered for Privacy] (${message.length} chars)`;
+            }
+        }
+    }
+
+    const log = {
+        timestamp: new Date().toISOString(),
+        type,
+        message
+    };
+    logBuffer.push(log);
+    if (logBuffer.length > MAX_LOGS) logBuffer.shift();
+
+    // Broadcast to settings page if open
+    chrome.runtime.sendMessage({ type: 'LOG_ENTRY', log }).catch(() => { });
+}
+
+// Heartbeat to keep background script / service worker alive
+function setupHeartbeat() {
+    const ALARM_NAME = 'GhotiHeartbeat';
+    const INTERVAL_SECONDS = 25;
+
+    console.log(`[Ghoti Heartbeat] Setting up heartbeat every ${INTERVAL_SECONDS}s...`);
+
+    chrome.alarms.create(ALARM_NAME, { periodInMinutes: INTERVAL_SECONDS / 60 });
+
+    chrome.alarms.onAlarm.addListener((alarm) => {
+        if (alarm.name === ALARM_NAME) {
+            // Trivial extension API call to reset the idle timer
+            chrome.storage.local.get([STATS_KEY], () => {
+                const now = new Date().toLocaleTimeString();
+                // We don't want to spam the log buffer with heartbeats, 
+                // so we just log to the real console
+                originalLog.apply(console, [`[Ghoti Heartbeat] 💓 Pulsed at ${now}`]);
+            });
+        }
+    });
+
+    // Also send a heartbeat message to the script itself every 25s
+    // to ensure the internal timers and event loop stay active
+    setInterval(() => {
+        chrome.runtime.sendMessage({ type: 'HEARTBEAT_TICK' }).catch(() => { });
+    }, INTERVAL_SECONDS * 1000);
+}
+
+// Override console methods to buffer logs
+const originalLog = console.log;
+console.log = function (...args) {
+    originalLog.apply(console, args);
+    addBufferedLog('info', args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
+};
+
+const originalWarn = console.warn;
+console.warn = function (...args) {
+    originalWarn.apply(console, args);
+    addBufferedLog('warn', args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
+};
+
+const originalError = console.error;
+console.error = function (...args) {
+    originalError.apply(console, args);
+    addBufferedLog('error', args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
+};
 
 // Initialize LLM handler
 const llmHandler = createLLMHandler({
     onProgress: (progress) => {
         console.log('[Ghoti LLM] Loading:', progress.text);
     }
+});
+
+// Initialize settings on installation
+chrome.runtime.onInstalled.addListener(async () => {
+    console.log('[Ghoti Background] Extension installed/updated, initializing settings...');
+    const currentSettings = await chrome.storage.sync.get(null);
+    const newSettings = { ...DEFAULTS, ...currentSettings };
+    await chrome.storage.sync.set(newSettings);
 });
 
 // Stats management
@@ -42,7 +163,9 @@ async function updateStats(update) {
         stats.recentScans.unshift({
             domain: update.scan.domain,
             url: update.scan.url,
-            confidence: update.scan.confidence,
+            confidence: update.scan.confidence, // Primary confidence (remote if available)
+            localConfidence: update.scan.localConfidence || null,
+            remoteConfidence: update.scan.remoteConfidence || null,
             isPhishing: update.scan.isPhishing,
             source: update.scan.source,
             timestamp: stats.lastScan
@@ -222,6 +345,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
         return true;
     }
+
+    if (request.type === 'GET_LOGS') {
+        sendResponse({ logs: logBuffer });
+        return true;
+    }
+
+    if (request.type === 'CLEAR_STATS') {
+        chrome.storage.local.set({ [STATS_KEY]: null }, () => {
+            sendResponse({ success: true });
+        });
+        return true;
+    }
 });
 let urlInWhiteList = async (url) => {
     //TODO: implement
@@ -253,130 +388,89 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         console.log('[Ghoti LLM]   Status after init:', handler.getStatus());
 
-        // Build prompt using shared prompt builder (now with WHOIS data)
-        const prompt = buildSimplePrompt({ url, extractedData, whoisData });
-        console.log(`[Ghoti LLM]   Prompt length: ${prompt.length} chars`);
+        // === STEP 1: GENERATE REASONING ===
+        const reasoningPrompt = buildLocalReasoningPrompt({ url, extractedData, whoisData });
+        console.log(`[Ghoti LLM] Step 1: Generating reasoning for ${domain}...`);
 
-        // Reset chat history before each analysis to prevent message sequence errors
+        // Reset chat history
         await handler.handleMessage({ type: LLM_MESSAGE_TYPES.RESET });
 
-        console.log(`[Ghoti LLM]   Generating response for ${domain}...`);
         const genStartTime = performance.now();
-
-        const result = await handler.handleMessage({
+        const step1Result = await handler.handleMessage({
             type: LLM_MESSAGE_TYPES.CHAT,
-            message: prompt,
+            message: reasoningPrompt,
             options: {
-                temperature: 0.1,
-                max_tokens: 512, // Limit output tokens
+                temperature: 0.2, // Slightly higher for reasoning
+                max_tokens: 512
+            }
+        });
+
+        if (step1Result.error) throw new Error("Reasoning step failed: " + step1Result.error);
+        const reasoning = step1Result.content || "No reasoning generated.";
+        console.log(`[Ghoti LLM] Step 1 complete. Reasoning length: ${reasoning.length}`);
+
+        // === STEP 2: GENERATE SCORE ===
+        const scoringPrompt = buildLocalScoringPrompt(reasoning);
+        console.log(`[Ghoti LLM] Step 2: Generating score for ${domain}...`);
+
+        const step2Result = await handler.handleMessage({
+            type: LLM_MESSAGE_TYPES.CHAT,
+            message: scoringPrompt,
+            options: {
+                temperature: 0.15, // Low temperature for consistent scoring
+                max_tokens: 128,
                 response_format: { type: "json_object" }
             }
         });
 
+        if (step2Result.error) throw new Error("Scoring step failed: " + step2Result.error);
+
         const genTime = ((performance.now() - genStartTime) / 1000).toFixed(2);
-        console.log(`[Ghoti LLM]   Generation complete in ${genTime}s`);
+        console.log(`[Ghoti LLM] Chain complete in ${genTime}s`);
 
-        if (result.error) throw new Error(result.error);
-
-        console.log(`[Ghoti LLM]   Response length: ${result.content?.length || 0} chars`);
-        console.log('[Ghoti LLM]   Raw response:', result.content);
-
+        let confidence = 0;
         try {
-            // Attempt to parse JSON from the response
-            // Handle markdown code blocks if present
-            let jsonStr = result.content;
+            let jsonStr = step2Result.content;
             if (jsonStr.includes('```json')) {
                 jsonStr = jsonStr.split('```json')[1].split('```')[0];
             } else if (jsonStr.includes('```')) {
                 jsonStr = jsonStr.split('```')[1].split('```')[0];
             }
-
             const analysis = JSON.parse(jsonStr.trim());
-            let confidence = analysis.confidence || 0;
-            const reasoning = analysis.reasoning || "";
-
-            // Lightweight sentiment analysis to detect contradictions
-            const reasoningLower = reasoning.toLowerCase();
-
-            // Negative indicators (suggesting phishing/danger) with weights
-            const negativePatterns = [
-                [/\bfake\b/g, 3], [/\bphishing\b/g, 4], [/\bmalicious\b/g, 4],
-                [/\bscam\b/g, 4], [/\bfraudulent\b/g, 4], [/\bsuspicious\b/g, 2],
-                [/\bnot legitimate\b/g, 3], [/\bnot real\b/g, 3], [/\bcredential.?theft\b/g, 4],
-                [/\bimpersonat/g, 3], [/\bdeceptive\b/g, 3], [/\buntrustworthy\b/g, 3],
-                [/\bdangerous\b/g, 3], [/\bharmful\b/g, 3], [/\bthreat\b/g, 2],
-                [/\brisk factors?\b/g, 1], [/\bred flags?\b/g, 2], [/\bwarning\b/g, 1],
-                [/\bsteal/g, 3], [/\bharvest/g, 3], [/\bcapture\b/g, 2],
-            ];
-
-            // Positive indicators (suggesting safety/legitimacy) with weights
-            const positivePatterns = [
-                [/\bsafe\b/g, 3], [/\blegitimate\b/g, 3], [/\btrustworthy\b/g, 3],
-                [/\bgenuine\b/g, 3], [/\bauthentic\b/g, 3], [/\bno.{0,5}risk/g, 2],
-                [/\blow.{0,5}risk/g, 2], [/\bnot.{0,10}phishing/g, 3], [/\bverified\b/g, 2],
-                [/\bestablished\b/g, 2], [/\breputable\b/g, 3], [/\bbenign\b/g, 2],
-                [/\bnormal\b/g, 1], [/\bstandard\b/g, 1], [/\blegit\b/g, 2],
-            ];
-
-            // Calculate sentiment scores
-            let negativeScore = 0, positiveScore = 0;
-            for (const [pattern, weight] of negativePatterns) {
-                const matches = reasoningLower.match(pattern);
-                if (matches) negativeScore += matches.length * weight;
-            }
-            for (const [pattern, weight] of positivePatterns) {
-                const matches = reasoningLower.match(pattern);
-                if (matches) positiveScore += matches.length * weight;
-            }
-
-            // Net sentiment: positive = safe, negative = dangerous
-            const netSentiment = positiveScore - negativeScore;
-
-            // Detect and correct contradictions based on sentiment vs confidence
-            // If reasoning is very negative (sentiment < -3) but confidence is low
-            if (netSentiment <= -3 && confidence < 50) {
-                const adjustedConfidence = Math.min(75, 50 + Math.abs(netSentiment) * 3);
-                console.warn(`[Ghoti LLM] ⚠ Sentiment contradiction: reasoning sentiment=${netSentiment} (negative) but confidence=${confidence}. Adjusting to ${adjustedConfidence}.`);
-                confidence = adjustedConfidence;
-            }
-            // If reasoning is very positive (sentiment > 3) but confidence is high
-            else if (netSentiment >= 3 && confidence > 50) {
-                const adjustedConfidence = Math.max(15, 50 - netSentiment * 3);
-                console.warn(`[Ghoti LLM] ⚠ Sentiment contradiction: reasoning sentiment=${netSentiment} (positive) but confidence=${confidence}. Adjusting to ${adjustedConfidence}.`);
-                confidence = adjustedConfidence;
-            }
-
-            // Derive isPhishing from confidence vs localThreshold
-            const isPhishing = confidence > localThreshold;
-
-            const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
-            console.log(`[Ghoti LLM] ✓ Analysis complete for: ${domain}`);
-            console.log(`[Ghoti LLM]   Confidence: ${confidence}% | Phishing: ${isPhishing} | Sentiment: ${netSentiment} | Total time: ${totalTime}s`);
-            console.log(`[Ghoti LLM]   Reasoning: ${reasoning.slice(0, 100)}...`);
-
-            return {
-                isPhishing,
-                confidence,
-                reasoning: reasoning || "No reasoning provided",
-                raw: result.content
-            };
+            confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence || 0);
         } catch (e) {
-            const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
-            console.warn(`[Ghoti LLM] ⚠ Parse failed for: ${domain} (${totalTime}s)`);
-            console.warn('[Ghoti LLM]   Error:', e.message);
-            return {
-                isPhishing: false, // Default to safe if parse fails
-                confidence: 0,
-                error: "JSON_PARSE_ERROR",
-                reasoning: "Failed to parse local analysis. Raw response: " + (result.content || "").slice(0, 200),
-                raw: result.content
-            };
+            console.warn("[Ghoti LLM] Failed to parse score JSON, attempting fallback parse");
+            const riskMatch = step2Result.content.match(/"phishingRisk":\s*(\d+)/);
+            const confMatch = step2Result.content.match(/"confidence":\s*(\d+)/);
+            if (riskMatch) {
+                confidence = parseInt(riskMatch[1]);
+            } else if (confMatch) {
+                confidence = parseInt(confMatch[1]);
+            }
         }
+
+        // Derive isPhishing from confidence vs localThreshold
+        const isPhishing = confidence > localThreshold;
+
+        console.log(`[Ghoti LLM] ✓ Analysis complete: ${confidence}% | Phishing: ${isPhishing}`);
+
+        return {
+            isPhishing,
+            confidence,
+            reasoning,
+            raw: step1Result.content + "\n\nSCORE_JSON: " + step2Result.content
+        };
+
     } catch (error) {
         const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
-        console.error(`[Ghoti LLM] ✗ Analysis failed for: ${domain} (${totalTime}s)`);
+        console.error(`[Ghoti LLM] ✗ Chain failed for: ${domain} (${totalTime}s)`);
         console.error('[Ghoti LLM]   Error:', error.message);
-        return { error: error.message };
+        return {
+            isPhishing: false,
+            confidence: 0,
+            error: error.message,
+            reasoning: "Local analysis failed: " + error.message
+        };
     }
 }
 
@@ -416,6 +510,7 @@ async function handlePageAnalysis(data, tabId) {
     // 0. Fetch WHOIS first (needed for both local and remote)
     let whoisData = null;
     try {
+        chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'fetching_whois', message: 'WHOIS verileri alınıyor...' }).catch(() => { });
         const whoisResponse = await fetch(REMOTE_WHOIS, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -430,6 +525,7 @@ async function handlePageAnalysis(data, tabId) {
     }
 
     // 1. Run Local Analysis (with WHOIS data)
+    chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'local_analysis', message: 'Yerel analiz yapılıyor...' }).catch(() => { });
     const localAnalysis = await analyzeWithLocalLLM(url, extractedData, whoisData, settings.localThreshold);
     console.log('[Ghoti Background] Local Analysis Result:', localAnalysis);
 
@@ -455,6 +551,8 @@ async function handlePageAnalysis(data, tabId) {
                 domain: urlObj.hostname,
                 url: url,
                 confidence: localSuspicion,
+                localConfidence: localSuspicion,
+                remoteConfidence: null,
                 isPhishing: isPhishing,
                 source: 'local'
             }
@@ -474,15 +572,26 @@ async function handlePageAnalysis(data, tabId) {
             }, settings).catch(err => console.warn('[Ghoti Background] Upload failed:', err));
         }
 
-        return {
+        const result = {
             success: true,
             whoisResult: null,
-            queryResult: {
+            queryResult: null, // No remote analysis for trusted sites
+            localResult: {
                 finalRating: localSuspicion,
                 response: localAnalysis.reasoning || "Analyzed locally, deemed safe.",
-                source: "local"
+                source: "local",
+                error: null
             }
         };
+
+        // Broadcast completion
+        chrome.runtime.sendMessage({
+            type: 'SCAN_COMPLETE',
+            tabId: tabId,
+            result: result
+        }).catch(() => { });
+
+        return result;
     }
 
     // If in compareMode, log that we're running both
@@ -495,6 +604,7 @@ async function handlePageAnalysis(data, tabId) {
     }
 
     try {
+        chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'remote_analysis', message: 'Sunucu-tabanlı analiz yapılıyor...' }).catch(() => { });
         // Reuse the WHOIS data we already fetched for local analysis
         const whoisResult = whoisData;
         const queryPromise = new Promise((resolve, reject) => {
@@ -577,6 +687,8 @@ async function handlePageAnalysis(data, tabId) {
                 domain: urlObj.hostname,
                 url: url,
                 confidence: queryResult.finalRating,
+                localConfidence: localSuspicion,
+                remoteConfidence: queryResult.finalRating,
                 isPhishing: isPhishing,
                 source: settings.compareMode ? 'compare' : 'remote'
             }
@@ -584,8 +696,9 @@ async function handlePageAnalysis(data, tabId) {
 
         // In compare mode, return both results
         if (settings.compareMode) {
-            return {
+            const result = {
                 success: true,
+                scanId: data.scanId, // Echo back the scanId
                 whoisResult,
                 queryResult: { ...queryResult, source: "remote" },
                 localResult: {
@@ -595,13 +708,37 @@ async function handlePageAnalysis(data, tabId) {
                     error: localAnalysis.error || null
                 }
             };
+
+            // Broadcast completion
+            chrome.runtime.sendMessage({
+                type: 'SCAN_COMPLETE',
+                tabId: tabId,
+                result: result
+            }).catch(() => { });
+
+            return result;
         }
 
-        return {
+        const result = {
             success: true,
             whoisResult,
-            queryResult: { ...queryResult, source: "remote" }
+            queryResult: { ...queryResult, source: "remote" },
+            localResult: {
+                finalRating: localSuspicion,
+                response: localAnalysis.reasoning || "Local analysis result",
+                source: "local",
+                error: localAnalysis.error || null
+            }
         };
+
+        // Broadcast completion to all extension views (including popup)
+        chrome.runtime.sendMessage({
+            type: 'SCAN_COMPLETE',
+            tabId: tabId,
+            result: result
+        }).catch(() => { });
+
+        return result;
     } catch (error) {
         console.error('[Ghoti Background] Remote Analysis failed:', error);
         // Fallback to local result if remote fails?
@@ -612,6 +749,8 @@ async function handlePageAnalysis(data, tabId) {
                     domain: urlObj.hostname,
                     url: url,
                     confidence: localSuspicion,
+                    localConfidence: localSuspicion,
+                    remoteConfidence: null,
                     isPhishing: localSuspicion > settings.localThreshold,
                     source: 'local'
                 }
@@ -620,10 +759,12 @@ async function handlePageAnalysis(data, tabId) {
             return {
                 success: true,
                 whoisResult: null,
-                queryResult: {
+                queryResult: null, // Remote failed
+                localResult: {
                     finalRating: localSuspicion,
-                    response: localAnalysis.reasoning + " (Remote analysis failed)",
-                    source: "local-fallback"
+                    response: localAnalysis.reasoning || "Local analysis result",
+                    source: "local",
+                    error: localAnalysis.error || null
                 }
             };
         }
@@ -661,23 +802,60 @@ async function handleWhoisLookup(data) {
 // Log when the service worker starts
 console.log('[Ghoti Background] Service worker started');
 
-// Auto-scan on startup
+// Auto-scan on startup (Mass scan of all tabs)
 chrome.runtime.onStartup.addListener(async () => {
-    const settings = await chrome.storage.sync.get({ autoScanOnStartup: false });
-    if (settings.autoScanOnStartup) {
+    const settings = await chrome.storage.sync.get(DEFAULTS);
+    if (settings.isActive && settings.autoScanOnStartup) {
         console.log('[Ghoti Background] Auto-scan enabled, scanning all tabs...');
         const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
         for (const tab of tabs) {
-            // Inject script if not present (although content script should be automatic for matches)
-            // But we need to trigger the analysis explicitly if the content script just sits there waiting for events?
-            // Looking at inject.js, it calls analyzePage() on load.
-            // So simply reloading might be aggressive. 
-            // Best to message the tab to rescan.
             try {
-                chrome.tabs.sendMessage(tab.id, { type: 'RESCAN_PAGE' });
+                chrome.tabs.sendMessage(tab.id, {
+                    type: 'START_SCAN',
+                    scanId: generateScanId()
+                });
             } catch (e) {
-                // Content script might not be ready or injected
+                // Content script might not be ready
             }
         }
     }
 });
+
+// Scan on navigation
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    // Only trigger when navigation is complete and URL is available
+    if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
+        const settings = await chrome.storage.sync.get(DEFAULTS);
+        if (settings.isActive) {
+            console.log(`[Ghoti Background] Navigation detected on tab ${tabId}, triggering scan...`);
+            try {
+                // We use START_SCAN instead of RESCAN_PAGE for the automatic trigger
+                chrome.tabs.sendMessage(tabId, {
+                    type: 'START_SCAN',
+                    scanId: generateScanId()
+                });
+            } catch (e) {
+                // Content script not yet ready, it will trigger itself via load event if we hadn't removed it
+                // Wait, if it's a fresh injection, the content script will be there.
+            }
+        }
+    }
+});
+
+// Initialize LLM and Session on boot
+(async () => {
+    await initSessionNonce();
+
+    const settings = await chrome.storage.sync.get(DEFAULTS);
+    if (settings.preloadLLM && settings.isActive) {
+        console.log('[Ghoti Background] Pre-loading LLM model...');
+        try {
+            await llmHandler.handleMessage({ type: LLM_MESSAGE_TYPES.INIT });
+        } catch (e) {
+            console.error('[Ghoti Background] Failed to pre-load LLM:', e);
+        }
+    }
+})();
+
+// Start heartbeat
+setupHeartbeat();

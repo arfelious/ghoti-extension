@@ -26,9 +26,11 @@
     "webpack-merge": "^5.10.0"
   },
   "dependencies": {
-    "@mlc-ai/web-llm": "^0.2.80",
+    "@mlc-ai/web-llm": "file:./src/web-llm",
     "acorn": "^8.14.0",
     "htmlparser2": "^9.1.0",
-    "postcss": "^8.4.49"
+    "perf_hooks": "^0.0.1",
+    "postcss": "^8.4.49",
+    "url": "^0.11.4"
   }
 }

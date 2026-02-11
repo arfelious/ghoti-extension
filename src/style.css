@@ -193,6 +193,10 @@ body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
   transition: width var(--transition);
 }
 
+.progress-fill.ready {
+  transition: none !important;
+}
+
 /* Main content area */
 .main-content {
   flex: 1;
@@ -412,6 +416,28 @@ body[data-expanded-bottom="true"] .more-section {
   border-radius: var(--border-radius);
   flex-direction: column;
   gap: 4px;
+}
+
+.output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: color var(--transition);
+  display: flex;
+  align-items: center;
+}
+
+.icon-btn:hover {
+  color: var(--text-primary);
 }
 
 /* Show output when bottom is expanded (left panel will already be visible) */

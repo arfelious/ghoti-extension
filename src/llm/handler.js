@@ -6,8 +6,9 @@
  * messages from the frontend adapter.
  */
 
-import { CreateMLCEngine } from '@mlc-ai/web-llm';
+import { CreateMLCEngine } from '../web-llm';
 import { LLM_MESSAGE_TYPES, DEFAULT_CONFIG, LLM_STATUS } from './config.js';
+import { DEFAULTS } from '../config/defaults.js';
 import {
     getCustomModels,
     addCustomModel,
@@ -38,6 +39,8 @@ export function createLLMHandler(options = {}) {
     let loadProgress = 0;
     let chatHistory = [];
     let currentModelId = null;
+    let inactivityTimer = null;
+    const INACTIVITY_LIMIT = 30 * 60 * 1000; // 30 minutes in milliseconds
 
     // Request queue for thread-safe sequential processing
     let requestQueue = [];
@@ -52,18 +55,36 @@ export function createLLMHandler(options = {}) {
     }
 
     /**
+     * Reset the inactivity timer. If it expires, the engine will be unloaded.
+     */
+    async function resetInactivityTimer() {
+        if (inactivityTimer) {
+            clearTimeout(inactivityTimer);
+            inactivityTimer = null;
+        }
+
+        const settings = await chrome.storage.sync.get(DEFAULTS);
+        if (settings.unloadAfterInactivity && status !== LLM_STATUS.UNINITIALIZED) {
+            inactivityTimer = setTimeout(async () => {
+                console.log(`[LLM Handler] Inactivity limit (${INACTIVITY_LIMIT / 1000 / 60}m) reached. Unloading engine...`);
+                await unloadEngine();
+            }, INACTIVITY_LIMIT);
+        }
+    }
+
+    /**
      * Build engine config with custom models
      */
     async function buildEngineConfig() {
         const customModels = await getCustomModels();
-        
+
         // Build appConfig with custom models if any exist
         if (customModels.length > 0) {
             return {
                 appConfig: buildAppConfig(customModels),
             };
         }
-        
+
         return {}; // Use default prebuilt config
     }
 
@@ -73,7 +94,7 @@ export function createLLMHandler(options = {}) {
      */
     async function initEngine(modelId = null) {
         const targetModelId = modelId || await getModelIdToUse();
-        
+
         // If already loaded with same model, skip
         if (engine && currentModelId === targetModelId) {
             return;
@@ -98,24 +119,45 @@ export function createLLMHandler(options = {}) {
         try {
             const initProgressCallback = (progress) => {
                 loadProgress = progress.progress;
+
+                // Detect activity type from text
+                // Web-LLM text usually contains "Fetching", "Loading", "Processing", etc.
+                let activity = 'loading';
+                const text = progress.text || '';
+                const lowerText = text.toLowerCase();
+
+                if (lowerText.includes('fetch') || lowerText.includes('download')) {
+                    // Only treat as downloading if it's not a quick manifest/wasm check
+                    if (lowerText.includes('config') || lowerText.includes('wasm')) {
+                        activity = 'loading';
+                    } else {
+                        activity = 'downloading';
+                    }
+                } else if (lowerText.includes('loading') || lowerText.includes('init')) {
+                    activity = 'loading';
+                }
+
                 if (config.onProgress) {
-                    config.onProgress(progress);
+                    config.onProgress({ ...progress, activity });
                 }
                 // Broadcast progress to all extension contexts
                 runtime.sendMessage({
                     type: LLM_MESSAGE_TYPES.INIT_PROGRESS,
                     progress: progress.progress,
                     text: progress.text,
+                    activity, // New field for UI granularity
                     modelId: currentModelId,
                 }).catch(() => { }); // Ignore errors if no listeners
             };
 
             const engineConfig = await buildEngineConfig();
             engineConfig.initProgressCallback = initProgressCallback;
-
+            engineConfig.unsafeBufferCreation = true;
+            engineConfig.deviceSyncFrequency = 100;
             engine = await CreateMLCEngine(targetModelId, engineConfig);
 
             status = LLM_STATUS.READY;
+            resetInactivityTimer(); // Start/Reset timer when engine is ready
 
             runtime.sendMessage({
                 type: LLM_MESSAGE_TYPES.INIT_COMPLETE,
@@ -146,6 +188,11 @@ export function createLLMHandler(options = {}) {
         currentModelId = null;
         chatHistory = [];
         loadProgress = 0;
+
+        if (inactivityTimer) {
+            clearTimeout(inactivityTimer);
+            inactivityTimer = null;
+        }
     }
 
     /**
@@ -181,9 +228,9 @@ export function createLLMHandler(options = {}) {
         status = LLM_STATUS.GENERATING;
 
         try {
-            // Clear history and use single-turn chat to avoid message sequence errors
+            // Clear history and ensure engine is reset to avoid "Message error should not be 0"
+            await engine.resetChat();
             chatHistory = [{ role: 'user', content: message }];
-            engine.resetChat();
 
             const response = await engine.chat.completions.create({
                 messages: chatHistory,
@@ -191,14 +238,29 @@ export function createLLMHandler(options = {}) {
             });
 
             const assistantMessage = response.choices[0].message.content;
+
+            // Log generation statistics (tokens/sec) - Use modern usage API instead of deprecated runtimeStatsText
+            if (response.usage) {
+                const u = response.usage;
+                const statsMsg = `[LLM Handler] Generation complete. Tokens: ${u.prompt_tokens}p + ${u.completion_tokens}c = ${u.total_tokens}t`;
+                console.log(statsMsg);
+
+                // WebLLM specific performance stats if available in extra
+                if (u.extra) {
+                    const perf = `[LLM Handler] Performance: Prefill ${u.extra.prefill_tokens_per_s?.toFixed(1)} t/s, Decode ${u.extra.decode_tokens_per_s?.toFixed(1)} t/s`;
+                    console.log(perf);
+                }
+            }
+
             status = LLM_STATUS.READY;
+            resetInactivityTimer(); // Reset timer after each chat execution
             return { content: assistantMessage };
         } catch (error) {
             status = LLM_STATUS.ERROR;
             // Reset on error to recover
             chatHistory = [];
             if (engine) {
-                engine.resetChat();
+                await engine.resetChat();
             }
             throw error;
         }
@@ -222,11 +284,14 @@ export function createLLMHandler(options = {}) {
         status = LLM_STATUS.GENERATING;
 
         try {
-            chatHistory.push({ role: 'user', content: message });
+            // Reset for a fresh stream if it's the start of a turn
+            await engine.resetChat();
+            chatHistory = [{ role: 'user', content: message }];
 
             const stream = await engine.chat.completions.create({
                 messages: chatHistory,
                 stream: true,
+                stream_options: { include_usage: true },
                 ...options,
             });
 
@@ -234,6 +299,16 @@ export function createLLMHandler(options = {}) {
 
             for await (const chunk of stream) {
                 const delta = chunk.choices[0]?.delta?.content || '';
+
+                // Handle usage stats in the last chunk
+                if (chunk.usage) {
+                    const u = chunk.usage;
+                    console.log(`[LLM Handler] Stream complete. Tokens: ${u.prompt_tokens}p + ${u.completion_tokens}c = ${u.total_tokens}t`);
+                    if (u.extra) {
+                        console.log(`[LLM Handler] Stream Performance: Prefill ${u.extra.prefill_tokens_per_s?.toFixed(1)} t/s, Decode ${u.extra.decode_tokens_per_s?.toFixed(1)} t/s`);
+                    }
+                }
+
                 if (delta) {
                     fullContent += delta;
                     // Send chunk to the requesting tab/popup
@@ -293,15 +368,15 @@ export function createLLMHandler(options = {}) {
                     return { success: true, streaming: true };
 
                 case LLM_MESSAGE_TYPES.RESET:
-                    chatHistory = [];
                     if (engine) {
-                        engine.resetChat();
+                        await engine.resetChat();
                     }
+                    chatHistory = [];
                     return { success: true };
 
                 case LLM_MESSAGE_TYPES.ABORT:
                     if (engine) {
-                        engine.interruptGenerate();
+                        await engine.interruptGenerate();
                     }
                     status = LLM_STATUS.READY;
                     return { success: true };

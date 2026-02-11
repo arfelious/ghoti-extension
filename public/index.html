@@ -38,7 +38,10 @@
 
     <!-- Model output panel (visible when both expanded) -->
     <section id="output-panel" class="panel-output">
-      <h4>Model Çıktısı</h4>
+      <div class="output-header">
+        <h4 id="output-title">Son Genel Çıktı</h4>
+        <button id="toggle-output-source" class="icon-btn" title="Yerel/Genel Değiştir">🔄</button>
+      </div>
       <pre id="model-output" class="output-content">Henüz çıktı yok</pre>
     </section>
   </aside>

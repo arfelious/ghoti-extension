@@ -13,6 +13,9 @@ export const DEFAULTS = {
     alwaysShowRating: false,              // Always show toolbar with rating
 
     // Behavior options
+    autoScanOnStartup: false,             // Automatically scan all open tabs when the browser starts
+    preloadLLM: true,                     // Pre-load LLM model on startup to reduce initial scan delay
+    unloadAfterInactivity: false,         // Auto-unload model after 30 minutes of inactivity
     blockUntilScanned: false,             // Block page until scan completes
     cacheScannedPages: false,             // Cache results for previously scanned pages
     sendPageContent: true,                // Send page content from extension instead of server fetching

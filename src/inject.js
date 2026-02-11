@@ -1,5 +1,10 @@
 import { extractPageData, initParsers } from 'shared/extractor.js';
 
+// Internal state Symbols for robust deduplication (non-enumerable, hidden from page scripts)
+// Using Symbol.for to ensure these are consistent across possible script re-injections
+const ACTIVE_SCAN_ID = Symbol.for('GhotiActiveScanId');
+const INJECTED_TOOLBAR_ID = Symbol.for('GhotiInjectedToolbarId');
+
 /**
  * Serialize the DOM with sanitized inputs (empty all input values for privacy)
  * This captures the page as the user sees it, not what the server would fetch
@@ -71,7 +76,12 @@ function isVisible(el) {
 }
 
 const toolbarHeight = 60;
-function injectToolbar(probability) {
+function injectToolbar(probability, scanId = null) {
+  // Final check to prevent race-condition duplicates
+  if (scanId && window[INJECTED_TOOLBAR_ID] === scanId) {
+    console.log('[Ghoti] Toolbar for this scan already injected, skipping.');
+    return;
+  }
   // Push down any existing fixed elements at the top
   document.querySelectorAll('*').forEach(el => {
     const style = getComputedStyle(el);
@@ -130,9 +140,19 @@ function injectToolbar(probability) {
 
   // Insert toolbar at the very beginning of body
   document.body.insertBefore(toolbar, document.body.firstChild);
+
+  // Store the scanId we just injected for
+  if (scanId) {
+    window[INJECTED_TOOLBAR_ID] = scanId;
+  }
 }
 
-async function analyzePage() {
+async function analyzePage(scanId = null) {
+  // If scanId is provided, track it as the active scan for this window
+  if (scanId) {
+    window[ACTIVE_SCAN_ID] = scanId;
+  }
+
   const settings = await chrome.storage.sync.get({
     globalThreshold: 60,
     showConfidenceWhenSuspicious: false,  // Show confidence % on toolbar when suspicious
@@ -182,7 +202,7 @@ async function analyzePage() {
 
   chrome.runtime.sendMessage({
     type: 'ANALYZE_PAGE',
-    data: messageData
+    data: { ...messageData, scanId }
   }, response => {
     if (chrome.runtime.lastError) {
       console.error('[Ghoti] Communication error:', chrome.runtime.lastError);
@@ -215,25 +235,34 @@ async function analyzePage() {
       }
 
       const queryResult = response.queryResult;
-      const rating = queryResult.finalRating || 0;
-      const isSuspicious = rating > THRESHOLD;
+      const localResult = response.localResult;
 
+      // If remote analysis was skipped (site trusted locally), fall back to local result
+      let rating = 0;
+      if (queryResult && queryResult.finalRating !== undefined) {
+        rating = queryResult.finalRating;
+      } else if (localResult && localResult.finalRating !== undefined) {
+        rating = localResult.finalRating;
+        console.log('[Ghoti] No remote result, using local rating:', rating);
+      }
+
+      const isSuspicious = rating > THRESHOLD;
       console.log('[Ghoti] Final rating:', rating, '| Threshold:', THRESHOLD, '| Suspicious:', isSuspicious);
 
       if (settings.alwaysShowRating) {
         // Always show toolbar with rating
         console.log('[Ghoti] Showing toolbar with rating (alwaysShowRating=true)');
-        injectToolbar(rating);
+        injectToolbar(rating, scanId);
       } else if (isSuspicious) {
         // Site is suspicious - always show toolbar
         if (settings.showConfidenceWhenSuspicious) {
           // Show with confidence percentage
           console.log('[Ghoti] Showing toolbar with rating (suspicious + showConfidence=true)');
-          injectToolbar(rating);
+          injectToolbar(rating, scanId);
         } else {
           // Show without confidence percentage (just warning)
           console.log('[Ghoti] Showing toolbar without rating (suspicious + showConfidence=false)');
-          injectToolbar(null);  // null = show warning but not the percentage
+          injectToolbar(null, scanId);  // null = show warning but not the percentage
         }
       } else {
         console.log('[Ghoti] Site is safe, not showing toolbar');
@@ -243,18 +272,42 @@ async function analyzePage() {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === 'RESCAN_PAGE') {
-    console.log('[Ghoti] Rescanning page...');
-    // Remove existing toolbar
-    const existingToolbar = document.getElementById('ghoti-toolbar');
-    if (existingToolbar) existingToolbar.remove();
-    const existingSpacer = document.getElementById('ghoti-spacer');
-    if (existingSpacer) existingSpacer.remove();
+  if (request.type === 'RESCAN_PAGE' || request.type === 'START_SCAN') {
+    const incomingScanId = request.scanId;
 
-    // Reanalyze
-    analyzePage();
+    // Deduplication check: If we already have this scan active or a toolbar for it, skip
+    if (incomingScanId && (window[ACTIVE_SCAN_ID] === incomingScanId || window[INJECTED_TOOLBAR_ID] === incomingScanId)) {
+      console.log(`[Ghoti] Scan ID ${incomingScanId} already active or injected, skipping duplicate trigger.`);
+      sendResponse({ success: true, skipped: true });
+      return;
+    }
+
+    // Remove existing toolbar if it belongs to a different scan or if no ID provided
+    const existingToolbar = document.getElementById('ghoti-toolbar');
+    if (existingToolbar) {
+      // If it exists but we're starting a NEW scan, remove it
+      existingToolbar.remove();
+      const existingSpacer = document.getElementById('ghoti-spacer');
+      if (existingSpacer) existingSpacer.remove();
+    }
+
+    // Analyze
+    analyzePage(incomingScanId);
     sendResponse({ success: true });
+  } else if (request.type === 'GET_SCAN_RESULT') {
+    // Return the result stored in the data attribute
+    const resultJson = document.documentElement.dataset.ghotiResult;
+    if (resultJson) {
+      try {
+        sendResponse({ success: true, result: JSON.parse(resultJson) });
+      } catch (e) {
+        sendResponse({ error: 'Failed to parse result' });
+      }
+    } else {
+      sendResponse({ error: 'No scan result available' });
+    }
   }
+  return true; // Keep channel open for async sendResponse
 });
 
 /**
@@ -332,10 +385,12 @@ async function startAnalysis() {
   await waitForDomSettle(5000, 1800);
 
   console.log('[Ghoti] Starting analysis...');
-  analyzePage();
+  analyzePage(null); // Initial load scan usually doesn't have an ID from background yet
 }
 
-startAnalysis();
+// No automatic analysis on load.
+// Scans are now triggered by background.js (on navigation) or popup (manual).
+// startAnalysis();
 
 function ensureToolbarVisible() {
   const toolbar = document.getElementById('ghoti-toolbar');
