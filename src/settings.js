@@ -186,16 +186,29 @@ function setupEventListeners() {
         });
     });
 
-    // Sub-tab switching (Model management)
-    document.querySelectorAll('.tabs .tab-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const subtab = e.target.dataset.subtab;
-            switchSubTab(subtab);
-        });
-    });
-
     // Add custom model
     document.getElementById('addCustomModelBtn').addEventListener('click', handleAddCustomModel);
+
+    // Toggle form logic
+    const formContainer = document.getElementById('customModelFormContainer');
+    const toggleBtn = document.getElementById('toggleCustomFormBtn');
+
+    toggleBtn.addEventListener('click', () => {
+        const isHidden = formContainer.style.display === 'none';
+        formContainer.style.display = isHidden ? 'block' : 'none';
+        toggleBtn.style.display = 'none'; // Hide FAB when form is open
+        if (isHidden) {
+            document.getElementById('customModelId').focus();
+            // Scroll to form
+            formContainer.scrollIntoView({ behavior: 'smooth' });
+        }
+    });
+
+    // Cancel custom model
+    document.getElementById('cancelCustomModelBtn').addEventListener('click', () => {
+        formContainer.style.display = 'none';
+        toggleBtn.style.display = 'flex'; // Show FAB again
+    });
 
     // Auto-detect model lib from URL
     document.getElementById('customModelUrl').addEventListener('blur', handleModelUrlBlur);
@@ -333,17 +346,6 @@ function switchTab(tabName) {
     });
 }
 
-function switchSubTab(subtabName) {
-    // Update subtab buttons
-    document.querySelectorAll('.tabs .tab-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.subtab === subtabName);
-    });
-
-    // Update subtab content
-    document.querySelectorAll('.subtab-content').forEach(content => {
-        content.style.display = content.id === `${subtabName}-subtab` ? 'block' : 'none';
-    });
-}
 
 async function loadModelInfo() {
     const modelInfoDiv = document.getElementById('modelInfo');
@@ -384,14 +386,35 @@ function updateModelStatus() {
     loadModelInfo();
 }
 
+/**
+ * Check if the browser supports shader-f16 WebGPU feature
+ */
+async function checkShaderF16Support() {
+    if (!navigator.gpu) return false;
+    try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) return false;
+        return adapter.features.has('shader-f16');
+    } catch (e) {
+        console.warn('[Settings] Failed to check shader-f16 support:', e);
+        return false;
+    }
+}
+
 async function loadAvailableModels() {
     const modelSelect = document.getElementById('modelSelect');
     const presetsList = document.getElementById('presetModelsList');
     const customList = document.getElementById('customModelsList');
 
+    const hasShaderF16 = await checkShaderF16Support();
+    console.log('[Settings] shader-f16 support:', hasShaderF16);
+
     try {
         const { custom, presets } = await llm.getAvailableModels();
-        const selectedModel = await llm.getSelectedModel();
+        const status = await llm.getStatus();
+        const selectedModel = (await llm.getSelectedModel()) || status.modelId;
+
+        console.log('[Settings] Loading models:', { customCount: custom.length, presetsCount: presets.length, active: selectedModel });
 
         // Populate model selector
         modelSelect.innerHTML = '';
@@ -413,7 +436,7 @@ async function loadAvailableModels() {
         // Add preset models
         const presetGroup = document.createElement('optgroup');
         presetGroup.label = 'Hazır Modeller';
-        PRESET_MODELS.forEach(model => {
+        presets.forEach(model => {
             const option = document.createElement('option');
             option.value = model.model_id;
             option.textContent = `${model.model_id} (${model.vram_required_MB}MB)`;
@@ -423,10 +446,13 @@ async function loadAvailableModels() {
         modelSelect.appendChild(presetGroup);
 
         // Render preset models list
-        renderPresetModels(presetsList, presets, custom);
+        renderPresetModels(presetsList, presets, custom, hasShaderF16);
+
+        // Filter custom models for display (exclude presets)
+        const displayCustom = custom.filter(m => !presets.some(p => p.model_id === m.model_id));
 
         // Render custom models list
-        renderCustomModels(customList, custom);
+        renderCustomModels(customList, displayCustom, hasShaderF16);
 
     } catch (e) {
         console.error('Error loading models:', e);
@@ -434,15 +460,21 @@ async function loadAvailableModels() {
     }
 }
 
-function renderPresetModels(container, presets, customModels) {
+function renderPresetModels(container, presets, customModels, hasShaderF16) {
     const customIds = new Set(customModels.map(m => m.model_id));
 
-    container.innerHTML = PRESET_MODELS.map(model => {
+    container.innerHTML = presets.map(model => {
         const isInstalled = customIds.has(model.model_id);
+        const needsF16 = model.model_id.toLowerCase().includes('f16');
+        const showWarning = needsF16 && !hasShaderF16;
+
         return `
             <div class="model-card ${isInstalled ? 'installed' : ''}">
                 <div class="model-info">
-                    <div class="model-name">${model.model_id}</div>
+                    <div class="model-name">
+                        ${model.model_id}
+                        ${showWarning ? `<span class="warning-icon" data-tooltip="Tarayıcınız veya donanımınız 16-bit (f16) shader desteğine sahip değil. Bu model çalışmayabilir.">⚠️</span>` : ''}
+                    </div>
                     <div class="model-meta">
                         ${model.vram_required_MB}MB VRAM
                         ${model.low_resource_required ? ' • Düşük Kaynak' : ''}
@@ -461,34 +493,37 @@ function renderPresetModels(container, presets, customModels) {
     }).join('');
 }
 
-function renderCustomModels(container, customModels) {
+function renderCustomModels(container, customModels, hasShaderF16) {
     if (customModels.length === 0) {
         container.innerHTML = '<p class="empty-state">Yüklü özel model bulunamadı.</p>';
         return;
     }
 
-    container.innerHTML = customModels.map(model => `
+    container.innerHTML = customModels.map(model => {
+        const needsF16 = model.model_id.toLowerCase().includes('f16');
+        const showWarning = needsF16 && !hasShaderF16;
+
+        return `
         <div class="model-card custom">
             <div class="model-info">
-                <div class="model-name">${model.model_id}</div>
+                <div class="model-name">
+                    ${model.model_id}
+                    ${showWarning ? `<span class="warning-icon" data-tooltip="Tarayıcınız veya donanımınız 16-bit (f16) shader desteğine sahip değil. Bu model çalışmayabilir.">⚠️</span>` : ''}
+                </div>
                 <div class="model-meta">
                     ${model.vram_required_MB || '?'}MB VRAM
                 </div>
             </div>
-            <button 
-                class="btn btn-danger"
-                data-action="remove-custom"
-                data-model-id="${model.model_id}"
-            >
-                Kaldır
-            </button>
+            <button class="btn btn-danger" data-action="remove-custom" data-model-id="${model.model_id}">Kaldır</button>
         </div>
-    `).join('');
+    `;
+    }).join('');
 }
 
 window.addPresetModel = async function (modelId) {
     try {
-        const preset = PRESET_MODELS.find(m => m.model_id === modelId);
+        const { presets } = await llm.getAvailableModels();
+        const preset = presets.find(m => m.model_id === modelId);
         if (!preset) throw new Error('Model bulunamadı');
 
         await llm.addCustomModel({ ...preset });
@@ -569,13 +604,18 @@ async function handleAddCustomModel() {
             overrides: { context_window_size: contextSize },
         });
 
-        showStatus(`Özel model eklendi: ${modelId}`);
+        // Hide form and show FAB
+        document.getElementById('customModelFormContainer').style.display = 'none';
+        document.getElementById('toggleCustomFormBtn').style.display = 'flex';
 
+        // Clear inputs
         document.getElementById('customModelId').value = '';
         document.getElementById('customModelUrl').value = '';
         document.getElementById('customModelLib').value = '';
         document.getElementById('customModelVram').value = '0';
         document.getElementById('customContextSize').value = '4096';
+
+        showStatus(`Model "${modelId}" başarıyla eklendi`);
 
         await loadAvailableModels();
     } catch (e) {

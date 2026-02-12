@@ -430,23 +430,41 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         let confidence = 0;
         try {
-            let jsonStr = step2Result.content;
-            if (jsonStr.includes('```json')) {
-                jsonStr = jsonStr.split('```json')[1].split('```')[0];
-            } else if (jsonStr.includes('```')) {
-                jsonStr = jsonStr.split('```')[1].split('```')[0];
+            let jsonStr = step2Result.content.trim();
+            // Try to extract from markdown blocks first
+            if (jsonStr.includes('```')) {
+                const matches = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+                if (matches && matches[1]) jsonStr = matches[1].trim();
             }
-            const analysis = JSON.parse(jsonStr.trim());
-            confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence || 0);
+
+            try {
+                const analysis = JSON.parse(jsonStr);
+                confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence !== undefined ? analysis.confidence : analysis.score !== undefined ? analysis.score : 0);
+            } catch (jsonErr) {
+                // Fallback 1: Regex for properties
+                const riskMatch = jsonStr.match(/"?phishingRisk"?\s*:\s*(\d+)/i);
+                const confMatch = jsonStr.match(/"?confidence"?\s*:\s*(\d+)/i);
+                const scoreMatch = jsonStr.match(/"?score"?\s*:\s*(\d+)/i);
+
+                if (riskMatch) {
+                    confidence = parseInt(riskMatch[1]);
+                } else if (confMatch) {
+                    confidence = parseInt(confMatch[1]);
+                } else if (scoreMatch) {
+                    confidence = parseInt(scoreMatch[1]);
+                } else {
+                    // Fallback 2: Any number in a response that looks like just a number or "Score: 10"
+                    const simpleNumberMatch = jsonStr.match(/(\d+)/);
+                    if (simpleNumberMatch) {
+                        confidence = parseInt(simpleNumberMatch[1]);
+                    } else {
+                        throw jsonErr;
+                    }
+                }
+            }
         } catch (e) {
-            console.warn("[Ghoti LLM] Failed to parse score JSON, attempting fallback parse");
-            const riskMatch = step2Result.content.match(/"phishingRisk":\s*(\d+)/);
-            const confMatch = step2Result.content.match(/"confidence":\s*(\d+)/);
-            if (riskMatch) {
-                confidence = parseInt(riskMatch[1]);
-            } else if (confMatch) {
-                confidence = parseInt(confMatch[1]);
-            }
+            console.error("[Ghoti LLM] All score extraction methods failed:", e);
+            confidence = 0; // Default to safe if we truly can't parse anything
         }
 
         // Derive isPhishing from confidence vs localThreshold

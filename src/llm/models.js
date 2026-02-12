@@ -21,8 +21,17 @@ export const MODEL_VERSION = 'v0_2_80';
 /**
  * Preset custom models that users can easily add
  * These are models available in MLC but may require specific configuration
- */
+*/
 export const PRESET_MODELS = [
+    // Qwen2.5 models
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen2.5-0.5B-Instruct-q4f32_1-MLC',
+        model_id: 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen2-0.5B-Instruct-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 600,
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
     // Qwen3 models
     {
         model: 'https://huggingface.co/mlc-ai/Qwen3-0.6B-q4f16_1-MLC',
@@ -169,7 +178,7 @@ export async function addCustomModel(modelRecord) {
     }
 
     const models = await getCustomModels();
-    
+
     // Check for duplicate model_id
     if (models.some(m => m.model_id === modelRecord.model_id)) {
         throw new Error(`Model with ID "${modelRecord.model_id}" already exists`);
@@ -186,7 +195,7 @@ export async function addCustomModel(modelRecord) {
 
     models.push(newModel);
     await saveCustomModels(models);
-    
+
     return newModel;
 }
 
@@ -197,11 +206,11 @@ export async function addCustomModel(modelRecord) {
 export async function removeCustomModel(modelId) {
     const models = await getCustomModels();
     const filtered = models.filter(m => m.model_id !== modelId);
-    
+
     if (filtered.length === models.length) {
         throw new Error(`Model "${modelId}" not found`);
     }
-    
+
     await saveCustomModels(filtered);
 }
 
@@ -311,15 +320,12 @@ export function createModelFromUrl(huggingfaceUrl, options = {}) {
  */
 export async function getAllAvailableModels() {
     const custom = await getCustomModels();
-    
-    // Filter presets to exclude ones already added as custom
-    const customIds = new Set(custom.map(m => m.model_id));
-    const availablePresets = PRESET_MODELS.filter(m => !customIds.has(m.model_id));
-    
+
+    // Use full list of presets, UI will handle installed status
     return {
         custom,
-        presets: availablePresets,
-        all: [...custom, ...availablePresets],
+        presets: PRESET_MODELS,
+        all: [...custom, ...PRESET_MODELS],
     };
 }
 

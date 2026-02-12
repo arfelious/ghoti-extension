@@ -356,7 +356,7 @@ function toggleOutputSource() {
     // Update title
     const titleEl = document.getElementById('output-title');
     if (titleEl) {
-        titleEl.textContent = currentOutputSource === 'remote' ? 'Son Genel Çıktı' : 'Son Yerel Çıktı';
+        titleEl.textContent = currentOutputSource === 'remote' ? 'Genel Çıktı' : 'Yerel Çıktı';
     }
 
     // Refresh display
@@ -382,13 +382,16 @@ function updateModelOutput(result, domain = null) {
         if (currentOutputSource === 'remote' && !result.queryResult && result.localResult) {
             console.log('[Ghoti Popup] Remote result missing, showing local fallback');
             sourceData = result.localResult;
-            // Optionally update UI to show it's local
             const titleEl = document.getElementById('output-title');
-            if (titleEl) titleEl.textContent = 'Son Yerel Çıktı (Otomatik)';
+            if (titleEl) titleEl.textContent = 'Yerel Çıktı (Otomatik)';
         }
 
         if (sourceData) {
-            const response = sourceData.response || sourceData.reasoning || "";
+            let response = sourceData.response || sourceData.reasoning || "";
+
+            // Strip <think>...</think> tags and content
+            response = response.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
             const rating = sourceData.finalRating !== undefined ? `Risk: %${sourceData.finalRating}\n\n` : "";
             const domainHeader = domain ? `${domain}\n-------------------\n` : "";
             content = response ? `${domainHeader}${rating}${response}` : null;

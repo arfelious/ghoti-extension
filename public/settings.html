@@ -103,21 +103,26 @@
             </div>
 
             <div class="card">
-                <h2>🧩 Model Yönetimi</h2>
-                <div class="tabs" style="margin-bottom: 20px;">
-                    <button class="tab-btn active" data-subtab="presets" style="font-size: 12px; padding: 8px;">Hazır
-                        Modeller</button>
-                    <button class="tab-btn" data-subtab="custom" style="font-size: 12px; padding: 8px;">Özel
-                        Ekle</button>
+                <h2>📦 Hazır Modeller</h2>
+                <div class="preset-models-list model-grid" id="presetModelsList">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin-bottom: 0;">🧩 Özel Modeller</h2>
+                    <button id="toggleCustomFormBtn" class="fab-btn" title="Özel Model Ekle">➕</button>
                 </div>
 
-                <div id="presets-subtab" class="subtab-content">
-                    <div class="preset-models-list model-grid" id="presetModelsList">
-                        <!-- Populated by JS -->
-                    </div>
+                <div class="custom-models-list model-grid" id="customModelsList">
+                    <p class="empty-state">Yüklü özel model bulunamadı.</p>
                 </div>
 
-                <div id="custom-subtab" class="subtab-content" style="display: none;">
+                <!-- Collapsible Form -->
+                <div id="customModelFormContainer" class="custom-model-form-container" style="display: none;">
+                    <h3 style="margin: 20px 0 15px 0; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px;">
+                        Yeni Özel Model Ekle</h3>
                     <div class="custom-model-form">
                         <div class="form-group">
                             <label for="customModelId">Model Kimliği (ID):</label>
@@ -141,16 +146,11 @@
                                 <input type="number" id="customContextSize" value="4096">
                             </div>
                         </div>
-                        <button id="addCustomModelBtn" class="btn btn-primary" style="width: 100%;">Özel Modeli
-                            Ekle</button>
+                        <div style="display: flex; gap: 10px;">
+                            <button id="addCustomModelBtn" class="btn btn-primary" style="flex: 1;">Ekle</button>
+                            <button id="cancelCustomModelBtn" class="btn btn-secondary">İptal</button>
+                        </div>
                     </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>📦 Yüklü Özel Modeller</h2>
-                <div class="custom-models-list model-grid" id="customModelsList">
-                    <p class="empty-state">Yüklü özel model bulunamadı.</p>
                 </div>
             </div>
         </main>
