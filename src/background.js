@@ -631,7 +631,16 @@ async function handlePageAnalysis(data, tabId) {
 
             ws.onopen = () => {
                 console.log('[Ghoti Background] WebSocket connected');
-                // Wait for connection confirmation before sending data
+                // Start keep-alive ping
+                const pingInterval = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'ping' }));
+                    }
+                }, 20000); // Ping every 20s
+
+                // Clean up interval on close
+                ws.addEventListener('close', () => clearInterval(pingInterval));
+                ws.addEventListener('error', () => clearInterval(pingInterval));
             };
 
             ws.onmessage = (event) => {
