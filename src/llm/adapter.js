@@ -34,18 +34,9 @@ export class LLMAdapter {
         this._initPromise = new Promise(async (resolve, reject) => {
             try {
                 this._setStatus(LLM_STATUS.LOADING);
-
-                const response = await runtime.sendMessage({
-                    type: LLM_MESSAGE_TYPES.INIT,
-                });
-
-                if (response.error) {
-                    this._setStatus(LLM_STATUS.ERROR);
-                    reject(new Error(response.error));
-                } else {
-                    this._setStatus(LLM_STATUS.READY);
-                    resolve();
-                }
+                await this._send(LLM_MESSAGE_TYPES.INIT);
+                this._setStatus(LLM_STATUS.READY);
+                resolve();
             } catch (error) {
                 this._setStatus(LLM_STATUS.ERROR);
                 reject(error);
@@ -66,18 +57,8 @@ export class LLMAdapter {
         this._setStatus(LLM_STATUS.GENERATING);
 
         try {
-            const response = await runtime.sendMessage({
-                type: LLM_MESSAGE_TYPES.CHAT,
-                message,
-                options,
-            });
-
+            const response = await this._send(LLM_MESSAGE_TYPES.CHAT, { message, options });
             this._setStatus(LLM_STATUS.READY);
-
-            if (response.error) {
-                throw new Error(response.error);
-            }
-
             return response.content;
         } catch (error) {
             this._setStatus(LLM_STATUS.ERROR);
@@ -96,7 +77,7 @@ export class LLMAdapter {
         this._setStatus(LLM_STATUS.GENERATING);
 
         // Create a unique stream ID for this request
-        const streamId = `stream_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const streamId = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
         // Set up message listener for chunks
         const chunks = [];
@@ -151,28 +132,15 @@ export class LLMAdapter {
      * Reset the chat history
      */
     async reset() {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.RESET,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
+        await this._send(LLM_MESSAGE_TYPES.RESET);
     }
 
     /**
      * Abort current generation
      */
     async abort() {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.ABORT,
-        });
-
+        await this._send(LLM_MESSAGE_TYPES.ABORT);
         this._setStatus(LLM_STATUS.READY);
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
     }
 
     /**
@@ -180,15 +148,7 @@ export class LLMAdapter {
      * @returns {Promise<Object>}
      */
     async getStatus() {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.GET_STATUS,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
-
-        return response;
+        return this._send(LLM_MESSAGE_TYPES.GET_STATUS);
     }
 
     // ==================
@@ -200,15 +160,7 @@ export class LLMAdapter {
      * @returns {Promise<{custom: Array, presets: Array, all: Array}>}
      */
     async getAvailableModels() {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.GET_AVAILABLE_MODELS,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
-
-        return response;
+        return this._send(LLM_MESSAGE_TYPES.GET_AVAILABLE_MODELS);
     }
 
     /**
@@ -217,16 +169,7 @@ export class LLMAdapter {
      * @returns {Promise<Object>} The added model record
      */
     async addCustomModel(modelRecord) {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.ADD_CUSTOM_MODEL,
-            modelRecord,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
-
-        return response;
+        return this._send(LLM_MESSAGE_TYPES.ADD_CUSTOM_MODEL, { modelRecord });
     }
 
     /**
@@ -234,14 +177,7 @@ export class LLMAdapter {
      * @param {string} modelId - ID of the model to remove
      */
     async removeCustomModel(modelId) {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.REMOVE_CUSTOM_MODEL,
-            modelId,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
+        await this._send(LLM_MESSAGE_TYPES.REMOVE_CUSTOM_MODEL, { modelId });
     }
 
     /**
@@ -249,14 +185,7 @@ export class LLMAdapter {
      * @returns {Promise<string|null>}
      */
     async getSelectedModel() {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.GET_SELECTED_MODEL,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
-
+        const response = await this._send(LLM_MESSAGE_TYPES.GET_SELECTED_MODEL);
         return response.modelId;
     }
 
@@ -265,14 +194,7 @@ export class LLMAdapter {
      * @param {string} modelId - ID of the model to select
      */
     async selectModel(modelId) {
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.SELECT_MODEL,
-            modelId,
-        });
-
-        if (response.error) {
-            throw new Error(response.error);
-        }
+        await this._send(LLM_MESSAGE_TYPES.SELECT_MODEL, { modelId });
     }
 
     /**
@@ -284,18 +206,14 @@ export class LLMAdapter {
         this._setStatus(LLM_STATUS.LOADING);
         this._initPromise = null;
 
-        const response = await runtime.sendMessage({
-            type: LLM_MESSAGE_TYPES.RELOAD_MODEL,
-            modelId,
-        });
-
-        if (response.error) {
+        try {
+            const response = await this._send(LLM_MESSAGE_TYPES.RELOAD_MODEL, { modelId });
+            this._setStatus(LLM_STATUS.READY);
+            return response;
+        } catch (err) {
             this._setStatus(LLM_STATUS.ERROR);
-            throw new Error(response.error);
+            throw err;
         }
-
-        this._setStatus(LLM_STATUS.READY);
-        return response;
     }
 
     // Private methods
@@ -315,6 +233,18 @@ export class LLMAdapter {
         if (this.onStatusChange) {
             this.onStatusChange(status);
         }
+    }
+
+    /**
+     * Send a message to the background and throw if it returns an error.
+     * @param {string} type - Message type
+     * @param {Object} payload - Additional fields merged into the message
+     * @returns {Promise<Object>} The response object (error field already handled)
+     */
+    async _send(type, payload = {}) {
+        const response = await runtime.sendMessage({ type, ...payload });
+        if (response?.error) throw new Error(response.error);
+        return response;
     }
 }
 

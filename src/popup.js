@@ -4,6 +4,7 @@
  */
 
 import { DEFAULTS } from './config/defaults.js';
+import { SERVER_BASE } from './config/env.js';
 
 // LLM Message types (matching background.js)
 const LLM_MESSAGE_TYPES = {
@@ -15,6 +16,7 @@ const LLM_MESSAGE_TYPES = {
 // State
 let currentScanResult = null;
 let currentOutputSource = 'remote'; // 'remote' or 'local'
+let isDownloadingSession = false; // Sticky: once downloading is seen in a load session, stay "downloading" until complete
 
 document.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
@@ -42,6 +44,13 @@ async function loadSettings() {
         document.getElementById('checkbox3').checked = result.blockUntilScanned;
         document.getElementById('checkbox4').checked = result.cacheScannedPages;
         document.getElementById('checkbox5').checked = result.sendPageContent;
+        document.getElementById('checkbox6').checked = result.sendDomainOnlyUntilPhishing;
+
+        const cb7 = document.getElementById('checkbox7');
+        if (cb7) cb7.checked = result.blockOnSuspicious;
+
+        // Optional logic: maybe warn if blockOnSuspicious is on but blockUntilScanned isn't? 
+        // We'll just tie them to the storage directly for now. !== false; // default true
         document.getElementById('active-checkbox').checked = result.isActive;
 
         // Panel expansion state
@@ -73,6 +82,8 @@ async function saveSettings() {
             blockUntilScanned: document.getElementById('checkbox3').checked,
             cacheScannedPages: document.getElementById('checkbox4').checked,
             sendPageContent: document.getElementById('checkbox5').checked,
+            sendDomainOnlyUntilPhishing: document.getElementById('checkbox6').checked,
+            blockOnSuspicious: document.getElementById('checkbox7') ? document.getElementById('checkbox7').checked : false,
             isActive: document.getElementById('active-checkbox').checked,
             language: "tr",
             expandedLeft: document.body.dataset.expandedLeft === 'true',
@@ -114,6 +125,10 @@ function setupEventListeners() {
     document.getElementById('checkbox2').addEventListener('change', saveSettings);
     document.getElementById('checkbox3').addEventListener('change', saveSettings);
     document.getElementById('checkbox4').addEventListener('change', saveSettings);
+    document.getElementById('checkbox5').addEventListener('change', saveSettings);
+    document.getElementById('checkbox6').addEventListener('change', saveSettings);
+    const cb7 = document.getElementById('checkbox7');
+    if (cb7) cb7.addEventListener('change', saveSettings);
     document.getElementById('active-checkbox').addEventListener('change', saveSettings);
 
     // Action buttons (main)
@@ -144,7 +159,7 @@ function updateToggleLabels(expandedLeft, expandedBottom) {
         bottomLabel.textContent = expandedBottom ? 'Daha Az' : 'Daha Fazla';
     }
 }
-// ... (rest of loadSettings) ...
+
 
 /**
  * Toggle left panel expansion
@@ -215,13 +230,16 @@ function setupLLMStatusPolling() {
         if (message.type === LLM_MESSAGE_TYPES.INIT_PROGRESS) {
             updateProgressBar(message.progress, 'loading');
 
-            // Update status text based on activity (downloading vs loading)
+            // Once downloading is seen in a session, keep "downloading" label until complete
+            if (message.activity === 'downloading') isDownloadingSession = true;
+
             const statusEl = document.getElementById('llm-status');
             if (statusEl && message.activity) {
-                statusEl.textContent = message.activity === 'downloading' ? 'İndiriliyor...' : 'Yükleniyor...';
+                statusEl.textContent = isDownloadingSession ? 'İndiriliyor...' : 'Yükleniyor...';
                 statusEl.className = 'status-value loading';
             }
         } else if (message.type === LLM_MESSAGE_TYPES.INIT_COMPLETE) {
+            isDownloadingSession = false; // Reset for next load session
             updateLLMStatus();
         } else if (message.type === 'SCAN_PROGRESS') {
             const pageStatusEl = document.getElementById('page-status');
@@ -408,10 +426,40 @@ async function reportPage() {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         console.log('[Ghoti Popup] Reporting page:', tab.url);
-        // TODO: Implement page reporting
-        alert('Sayfa bildirildi!');
+        const btn = document.getElementById('btn-report');
+        const oldText = btn.innerHTML;
+        btn.innerHTML = 'Bildiriliyor...';
+        btn.disabled = true;
+
+        const baseUrl = SERVER_BASE; // Use configured server base
+        const domain = new URL(tab.url).hostname;
+
+        // Get session nonce for authentication
+        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
+
+        // Note: The /report endpoint takes { url, domain } and records in DB.
+        const response = await fetch(`${baseUrl}/report`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Ghoti-Nonce': SESSION_NONCE || ''
+            },
+            body: JSON.stringify({ url: tab.url, domain })
+        });
+
+        if (response.ok) {
+            btn.innerHTML = 'Bildirildi ✓';
+            setTimeout(() => { btn.innerHTML = oldText; btn.disabled = false; }, 2000);
+        } else {
+            throw new Error(await response.text());
+        }
     } catch (error) {
         console.error('[Ghoti Popup] Error reporting page:', error);
+        const btn = document.getElementById('btn-report');
+        if (btn) {
+            btn.innerHTML = 'Hata';
+            setTimeout(() => { btn.innerHTML = '<span class="icon">🚩</span><span>Raporla</span>'; btn.disabled = false; }, 2000);
+        }
     }
 }
 
@@ -429,12 +477,7 @@ async function rescanPage() {
 
         // Send message to content script to trigger rescan
         await chrome.tabs.sendMessage(tab.id, { type: 'RESCAN_PAGE' });
-
-        // Listen for result (simplified - in real impl use proper message passing)
-        setTimeout(() => {
-            document.getElementById('page-status').textContent = 'Tamamlandı';
-            document.getElementById('page-status').className = 'status-value ready';
-        }, 3000);
+        // Status will be updated to 'Tamamlandı' when SCAN_COMPLETE message arrives
 
     } catch (error) {
         console.error('[Ghoti Popup] Error rescanning page:', error);

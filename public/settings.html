@@ -11,7 +11,14 @@
 <body>
     <div class="container">
         <header>
-            <h1>🐟 Ghoti - Ayarlar</h1>
+            <h1 style="display: flex; align-items: center; gap: 8px;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" stroke="none"
+                    style="color: var(--accent-primary);">
+                    <path
+                        d="M2.5,12c4-6,11-6,15.5,0c-4.5,6-11.5,6-15.5,0z M18,12l5,3.5l0-7L18,12z M15,11a1.2,1.2 0 1,0 0,2.4a1.2,1.2 0 1,0 0-2.4z" />
+                </svg>
+                Ghoti - Ayarlar
+            </h1>
         </header>
 
         <nav class="settings-tabs">
@@ -158,11 +165,25 @@
         <!-- Logs Tab -->
         <main id="logs-tab" class="tab-content">
             <div class="card">
-                <h2>📜 Sistem Logları</h2>
+                <h2 style="display:flex; align-items:center; gap:8px;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-primary);">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg> Sistem Logları
+                </h2>
                 <div class="log-viewer" id="logViewer">
                     <div class="log-entry">Loglar bekleniyor...</div>
                 </div>
-                <div style="margin-top:15px; display:flex; gap:10px; align-items: center;">
+                <div style="margin-top:15px; display:flex; gap:10px; align-items: center; flex-wrap: wrap;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label for="maxLogs" style="font-size: 12px; margin-right: 6px;">Maks. Log:</label>
+                        <input type="number" id="maxLogs" min="10" max="10000" step="10" value="100"
+                            style="width: 80px; padding: 6px; font-size: 12px;">
+                    </div>
                     <div class="form-group" style="margin-bottom: 0; flex: 1;">
                         <select id="logFilter" style="padding: 8px; font-size: 12px; width: auto;">
                             <option value="all">Tüm Loglar</option>
@@ -180,7 +201,12 @@
         <!-- İstatistikler Tab -->
         <main id="stats-tab" class="tab-content">
             <div class="card">
-                <h2>📈 Genel Kullanım</h2>
+                <h2 style="display:flex; align-items:center; gap:8px;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-primary);">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg> Genel Kullanım
+                </h2>
                 <div class="stats-grid">
                     <div class="stat-item">
                         <span class="stat-value" id="statTotalScans">-</span>
@@ -213,7 +239,16 @@
             </div>
 
             <div class="card">
-                <h2>🌍 Sunucu İstatistikleri</h2>
+                <h2 style="display:flex; align-items:center; gap:8px;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-primary);">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="2" y1="12" x2="22" y2="12"></line>
+                        <path
+                            d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z">
+                        </path>
+                    </svg> Sunucu İstatistikleri
+                </h2>
                 <div class="stats-grid server-stats" id="serverStats">
                     <div class="stat-item">
                         <span class="stat-value" id="serverTotalSites">-</span>
@@ -234,7 +269,14 @@
 
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <h2 style="margin-bottom: 0;">🔍 Son Taramalar</h2>
+                    <h2 style="margin-bottom: 0; display:flex; align-items:center; gap:8px;">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                            style="color: var(--accent-primary);">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                        </svg> Son Taramalar
+                    </h2>
                     <button id="clearScansBtn" class="btn btn-danger btn-small"
                         style="padding: 5px 12px; font-size: 11px;">Tarama Geçmişini Temizle</button>
                 </div>

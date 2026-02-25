@@ -27,6 +27,7 @@ async function loadSettings() {
     document.getElementById('preloadLLM').checked = settings.preloadLLM;
     document.getElementById('unloadAfterInactivity').checked = settings.unloadAfterInactivity;
     document.getElementById('uploadLocalResults').checked = settings.uploadLocalResults;
+    document.getElementById('maxLogs').value = settings.maxLogs;
 }
 
 async function loadStats() {
@@ -175,6 +176,15 @@ function setupEventListeners() {
         showStatus('Ayarlar kaydedildi');
     });
 
+    document.getElementById('maxLogs').addEventListener('change', async (e) => {
+        const value = Math.max(10, parseInt(e.target.value) || 100);
+        e.target.value = value;
+        await chrome.storage.sync.set({ maxLogs: value });
+        // Trim the current buffer to the new limit
+        while (allLogs.length > value) allLogs.shift();
+        showStatus('Ayarlar kaydedildi');
+    });
+
     // Model selection
     document.getElementById('loadModelBtn').addEventListener('click', handleLoadModel);
 
@@ -304,7 +314,8 @@ function setupProgressListener() {
             showStatus('Model başarıyla yüklendi!');
         } else if (message.type === 'LOG_ENTRY') {
             allLogs.push(message.log);
-            if (allLogs.length > 100) allLogs.shift(); // Sync with MAX_LOGS in background
+            const maxLogs = parseInt(document.getElementById('maxLogs')?.value) || 100;
+            if (allLogs.length > maxLogs) allLogs.shift();
             appendLog(message.log);
         }
     });

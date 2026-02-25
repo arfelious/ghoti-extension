@@ -1,16 +1,25 @@
-const REMOTE_WHOIS = "http://localhost:9701/whois";
+const REMOTE_INIT = "http://localhost:9701/extension-init";
 const REMOTE_QUERY = "http://localhost:9701/query";
 const REMOTE_QUERY_WS = "ws://localhost:9701/query";
 const REMOTE_SUBMIT_RESULT = "http://localhost:9701/submit-result";
 const REMOTE_STATS = "http://localhost:9701/stats";
+const REMOTE_WHOIS = "http://localhost:9701/whois";
 const whitelistDbName = 'GhotiDefaultWL';
 import { createLLMHandler, LLM_MESSAGE_TYPES } from './llm';
-import { buildSimplePrompt, buildLocalReasoningPrompt, buildLocalScoringPrompt, PHISHING_SCHEMA } from 'shared/prompt-builder.js';
+import { buildSimplePrompt, buildLocalReasoningPrompt, buildLocalScoringPrompt, PHISHING_SCHEMA, verdictToScore } from 'shared/prompt-builder.js';
 import { DEFAULTS } from './config/defaults.js';
 
 // Logging buffer for Settings page
-const MAX_LOGS = 100;
+let MAX_LOGS = DEFAULTS.maxLogs;
 const logBuffer = [];
+
+// Keep MAX_LOGS in sync with user settings
+chrome.storage.sync.get({ maxLogs: DEFAULTS.maxLogs }, data => { MAX_LOGS = data.maxLogs; });
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.maxLogs) {
+        MAX_LOGS = changes.maxLogs.newValue;
+    }
+});
 let SESSION_NONCE = null;
 
 async function initSessionNonce() {
@@ -28,7 +37,10 @@ async function initSessionNonce() {
     try {
         const response = await fetch("http://localhost:9701/register-session", {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Ghoti-Nonce': SESSION_NONCE
+            },
             body: JSON.stringify({ nonce: SESSION_NONCE })
         });
         if (response.ok) {
@@ -204,9 +216,13 @@ async function uploadResultToServer(result, settings) {
     }
 
     try {
+        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
         const response = await fetch(REMOTE_SUBMIT_RESULT, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Ghoti-Nonce': SESSION_NONCE || ''
+            },
             body: JSON.stringify(result)
         });
 
@@ -439,14 +455,23 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
             try {
                 const analysis = JSON.parse(jsonStr);
-                confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence !== undefined ? analysis.confidence : analysis.score !== undefined ? analysis.score : 0);
+                if (analysis.verdict !== undefined && analysis.severity !== undefined) {
+                    confidence = verdictToScore(analysis.verdict, analysis.severity);
+                } else {
+                    confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence !== undefined ? analysis.confidence : analysis.score !== undefined ? analysis.score : 0);
+                }
             } catch (jsonErr) {
                 // Fallback 1: Regex for properties
+                const verdictMatch = jsonStr.match(/"?verdict"?\s*:\s*"?([A-Za-z]+)"?/i);
+                const severityMatch = jsonStr.match(/"?severity"?\s*:\s*(\d+)/i);
+
                 const riskMatch = jsonStr.match(/"?phishingRisk"?\s*:\s*(\d+)/i);
                 const confMatch = jsonStr.match(/"?confidence"?\s*:\s*(\d+)/i);
                 const scoreMatch = jsonStr.match(/"?score"?\s*:\s*(\d+)/i);
 
-                if (riskMatch) {
+                if (verdictMatch && severityMatch) {
+                    confidence = verdictToScore(verdictMatch[1], parseInt(severityMatch[1]));
+                } else if (riskMatch) {
                     confidence = parseInt(riskMatch[1]);
                 } else if (confMatch) {
                     confidence = parseInt(confMatch[1]);
@@ -502,7 +527,8 @@ async function handlePageAnalysis(data, tabId) {
         globalThreshold: 60,
         autoScanOnStartup: false,
         uploadLocalResults: false, // New setting for result upload
-        compareMode: false // Run both local and remote for testing
+        compareMode: false, // Run both local and remote for testing
+        sendDomainOnlyUntilPhishing: true // New setting for privacy
     });
 
     // Auto-enable compareMode when running under Puppeteer/automation
@@ -525,21 +551,37 @@ async function handlePageAnalysis(data, tabId) {
     console.log('[Ghoti Background] Analyzing page:', url);
     console.log('[Ghoti Background] Extracted data:', extractedData);
 
-    // 0. Fetch WHOIS first (needed for both local and remote)
+    // 0. Fetch Extension-Init Data (WHOIS + known phishing check)
     let whoisData = null;
+    let isKnownPhishing = false;
     try {
-        chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'fetching_whois', message: 'WHOIS verileri alınıyor...' }).catch(() => { });
-        const whoisResponse = await fetch(REMOTE_WHOIS, {
+        chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'fetching_init', message: 'Sunucuyla iletişim kuruluyor...' }).catch(() => { });
+        let payloadUrl = settings.sendDomainOnlyUntilPhishing ? urlObj.hostname : url;
+        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
+        const initResponse = await fetch(REMOTE_INIT, {
             method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ version: "0.1.0", domain })
+            headers: {
+                "content-type": "application/json",
+                "X-Ghoti-Nonce": SESSION_NONCE || ''
+            },
+            body: JSON.stringify({ version: "0.1.0", url: payloadUrl })
         });
-        if (whoisResponse.ok) {
-            whoisData = await whoisResponse.json();
-            console.log('[Ghoti Background] WHOIS data:', whoisData);
+        if (initResponse.ok) {
+            const initData = await initResponse.json();
+            if (initData.success) {
+                whoisData = initData.whoisData;
+                isKnownPhishing = initData.isKnownPhishing;
+                console.log('[Ghoti Background] WHOIS data:', whoisData);
+                console.log('[Ghoti Background] Known Phishing status:', isKnownPhishing);
+
+                // If known phishing, trigger early warning in the browser tab immediately
+                if (isKnownPhishing) {
+                    chrome.tabs.sendMessage(tabId, { type: 'SHOW_EARLY_WARNING', scanId: data.scanId }).catch(() => { });
+                }
+            }
         }
     } catch (e) {
-        console.warn('[Ghoti Background] WHOIS fetch failed:', e.message);
+        console.warn('[Ghoti Background] Extension-Init fetch failed:', e.message);
     }
 
     // 1. Run Local Analysis (with WHOIS data)
@@ -783,9 +825,9 @@ async function handlePageAnalysis(data, tabId) {
                 }
             });
 
-            return {
+            const result = {
                 success: true,
-                whoisResult: null,
+                whoisResult: whoisData, // Preserve WHOIS if it was fetched before remote failed
                 queryResult: null, // Remote failed
                 localResult: {
                     finalRating: localSuspicion,
@@ -794,8 +836,38 @@ async function handlePageAnalysis(data, tabId) {
                     error: localAnalysis.error || null
                 }
             };
+
+            // Broadcast completion (remote failed, falling back to local)
+            chrome.runtime.sendMessage({
+                type: 'SCAN_COMPLETE',
+                tabId: tabId,
+                result: result
+            }).catch(() => { });
+
+            return result;
         }
-        throw error;
+
+        // Both local and remote failed - return graceful error instead of throwing
+        console.error('[Ghoti Background] Both local and remote analysis failed');
+        const errorResult = {
+            success: true,
+            whoisResult: whoisData,
+            queryResult: null,
+            localResult: {
+                finalRating: 0,
+                response: `Analiz başarısız: ${localAnalysis.error || 'Bilinmeyen hata'}. Sunucuya da ulaşılamadı.`,
+                source: "error",
+                error: error.message
+            }
+        };
+
+        chrome.runtime.sendMessage({
+            type: 'SCAN_COMPLETE',
+            tabId: tabId,
+            result: errorResult
+        }).catch(() => { });
+
+        return errorResult;
     }
 }
 
@@ -804,9 +876,13 @@ async function handleWhoisLookup(data) {
     const { domain } = data;
 
     try {
+        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
         const response = await fetch(REMOTE_WHOIS, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: {
+                "content-type": "application/json",
+                "X-Ghoti-Nonce": SESSION_NONCE || ''
+            },
             body: JSON.stringify({
                 version: "0.1.0",
                 domain: domain

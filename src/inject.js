@@ -5,6 +5,34 @@ import { extractPageData, initParsers } from 'shared/extractor.js';
 const ACTIVE_SCAN_ID = Symbol.for('GhotiActiveScanId');
 const INJECTED_TOOLBAR_ID = Symbol.for('GhotiInjectedToolbarId');
 
+let blockedInputs = [];
+
+function blockAllInputs() {
+  if (blockedInputs.length > 0) return; // Already blocked
+  // Find all inputs, textareas, selects, and buttons that are NOT already disabled
+  const elements = document.querySelectorAll('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])');
+  elements.forEach(el => {
+    el.dataset.ghotiBlocked = "true";
+    el.disabled = true;
+    blockedInputs.push(el);
+  });
+  console.log(`[Ghoti] Blocked ${blockedInputs.length} user input elements.`);
+}
+
+function unblockAllInputs() {
+  if (blockedInputs.length === 0) return;
+  let count = 0;
+  blockedInputs.forEach(el => {
+    if (el && el.dataset.ghotiBlocked === "true") {
+      el.disabled = false;
+      delete el.dataset.ghotiBlocked;
+      count++;
+    }
+  });
+  console.log(`[Ghoti] Unblocked ${count} user input elements.`);
+  blockedInputs = [];
+}
+
 /**
  * Serialize the DOM with sanitized inputs (empty all input values for privacy)
  * This captures the page as the user sees it, not what the server would fetch
@@ -43,28 +71,26 @@ function serializeDomSanitized() {
 
   // Remove any inline event handlers that might contain sensitive data
   clone.querySelectorAll('[onclick], [onsubmit], [onload], [onerror]').forEach(el => {
-    // Keep the attribute names but redact complex handlers
     ['onclick', 'onsubmit', 'onload', 'onerror'].forEach(attr => {
       if (el.hasAttribute(attr)) {
         const val = el.getAttribute(attr);
-        if (val && val.length > 100) {
-          el.setAttribute(attr, '[HANDLER_REDACTED]');
-        }
+        // Move the potentially malicious part to a non-executable attribute
+        el.setAttribute(`data-analyzed-${attr}`, val);
+        // Remove the original so the phishing trigger is neutralized
+        el.removeAttribute(attr);
       }
     });
   });
 
   // Remove script contents but keep script tags (for structure analysis)
   clone.querySelectorAll('script').forEach(script => {
-    if (script.textContent && script.textContent.length > 500) {
-      // Keep first 500 chars for analysis, redact rest
-      script.textContent = script.textContent.slice(0, 500) + '\n// [TRUNCATED]';
+    // 1. Change type so it doesn't execute in analysis 
+    script.setAttribute('type', 'text/phish-analysis');
+    // 2. Optional: If it's an external script, save the URL but disable it
+    if (script.src) {
+      script.setAttribute('data-original-src', script.src);
+      script.removeAttribute('src');
     }
-  });
-
-  // Remove potentially sensitive meta tags
-  clone.querySelectorAll('meta[name*="token"], meta[name*="csrf"]').forEach(el => {
-    el.setAttribute('content', '[REDACTED]');
   });
 
   return clone.outerHTML;
@@ -76,16 +102,51 @@ function isVisible(el) {
 }
 
 const toolbarHeight = 60;
+
+function removeToolbar() {
+  const toolbar = document.getElementById('ghoti-toolbar');
+  if (toolbar) {
+    document.body.style.marginTop = toolbar.dataset.originalBodyMarginTop || '';
+    toolbar.remove();
+  }
+  const spacer = document.getElementById('ghoti-spacer');
+  if (spacer) spacer.remove();
+
+  // Restore pushed fixed elements
+  document.querySelectorAll('[data-ghoti-original-top]').forEach(el => {
+    el.style.top = el.dataset.ghotiOriginalTop;
+    delete el.dataset.ghotiOriginalTop;
+  });
+}
+
 function injectToolbar(probability, scanId = null) {
-  // Final check to prevent race-condition duplicates
-  if (scanId && window[INJECTED_TOOLBAR_ID] === scanId) {
-    console.log('[Ghoti] Toolbar for this scan already injected, skipping.');
+  const existingToolbar = document.getElementById('ghoti-toolbar');
+
+  // If already injected for this scan, just update the text
+  if (scanId && window[INJECTED_TOOLBAR_ID] === scanId && existingToolbar) {
+    console.log('[Ghoti] Toolbar for this scan already injected, updating text.');
+    if (probability === 'known_phishing') {
+      existingToolbar.textContent = '🚨 UYARI: Bu site daha önceki analizlerde oltalama (phishing) olarak tespit edilmiştir. İnceleme bitene kadar kişisel bilgilerinizi girmeyin!';
+    } else if (probability === null) {
+      existingToolbar.textContent = '🚨 UYARI: Bu site tehlikeli olabilir! Kişisel bilgilerinizi girmeyin.';
+    } else if (probability === undefined) {
+      existingToolbar.textContent = 'Analiz ediliyor...';
+    } else {
+      existingToolbar.textContent = `🚨 UYARI: Oltalama riski %${probability} - Kişisel bilgilerinizi girmeyin!`;
+    }
     return;
   }
+
+  // Remove existing before re-injecting
+  removeToolbar();
+
   // Push down any existing fixed elements at the top
   document.querySelectorAll('*').forEach(el => {
     const style = getComputedStyle(el);
-    if (style.position === 'fixed' && parseInt(style.top || '0') < toolbarHeight) {
+    if (style.position === 'fixed' && parseInt(style.top || '0') < toolbarHeight && el.id !== 'ghoti-toolbar') {
+      if (el.dataset.ghotiOriginalTop === undefined) {
+        el.dataset.ghotiOriginalTop = style.top || '0px';
+      }
       el.style.top = `${parseInt(style.top || '0') + toolbarHeight}px`;
     }
   });
@@ -112,7 +173,9 @@ function injectToolbar(probability, scanId = null) {
   `;
 
   // Show different message based on whether probability is provided
-  if (probability === null) {
+  if (probability === 'known_phishing') {
+    toolbar.textContent = '🚨 UYARI: Bu site daha önceki analizlerde oltalama (phishing) olarak tespit edilmiştir. İnceleme bitene kadar kişisel bilgilerinizi girmeyin!';
+  } else if (probability === null) {
     toolbar.textContent = '🚨 UYARI: Bu site tehlikeli olabilir! Kişisel bilgilerinizi girmeyin.';
   } else if (probability === undefined) {
     toolbar.textContent = 'Analiz ediliyor...';  // "Analysing..."
@@ -158,6 +221,8 @@ async function analyzePage(scanId = null) {
     showConfidenceWhenSuspicious: false,  // Show confidence % on toolbar when suspicious
     alwaysShowRating: false,  // Always show toolbar even for safe sites
     sendPageContent: true,  // Send page content instead of server fetching (better for personalized/geo-blocked content)
+    blockUntilScanned: false,
+    blockOnSuspicious: false,
     isActive: true,
     language: "tr"
   });
@@ -165,6 +230,11 @@ async function analyzePage(scanId = null) {
     console.log('[Ghoti] Extension is inactive, skipping analysis.');
     return;
   }
+
+  if (settings.blockUntilScanned) {
+    blockAllInputs();
+  }
+
   const THRESHOLD = settings.globalThreshold;
 
   // Initialize parsers and extract page data
@@ -211,6 +281,15 @@ async function analyzePage(scanId = null) {
 
     if (response.error) {
       console.error('[Ghoti] Analysis error:', response.error);
+      if (settings.blockUntilScanned) {
+        unblockAllInputs(); // Unblock on error so we don't trap the user
+      }
+      // Still save error state so popup can show it instead of being stuck
+      document.documentElement.dataset.ghotiResult = JSON.stringify({
+        success: false,
+        error: response.error,
+        timestamp: Date.now()
+      });
       return;
     }
 
@@ -249,6 +328,19 @@ async function analyzePage(scanId = null) {
       const isSuspicious = rating > THRESHOLD;
       console.log('[Ghoti] Final rating:', rating, '| Threshold:', THRESHOLD, '| Suspicious:', isSuspicious);
 
+      // Input blocking logic based on verdict
+      if (settings.blockUntilScanned) {
+        if (!isSuspicious || !settings.blockOnSuspicious) {
+          unblockAllInputs();
+        } else {
+          console.log('[Ghoti] Page is suspicious and blockOnSuspicious is true. Leaving inputs disabled.');
+        }
+      } else if (isSuspicious && settings.blockOnSuspicious) {
+        // Edge case: blockUntilScanned was false, but blockOnSuspicious is true
+        console.log('[Ghoti] Page is suspicious. Blocking inputs defensively.');
+        blockAllInputs();
+      }
+
       if (settings.alwaysShowRating) {
         // Always show toolbar with rating
         console.log('[Ghoti] Showing toolbar with rating (alwaysShowRating=true)');
@@ -266,6 +358,8 @@ async function analyzePage(scanId = null) {
         }
       } else {
         console.log('[Ghoti] Site is safe, not showing toolbar');
+        // Un-inject warning if it was shown previously (e.g. from early WHOIS prediction)
+        removeToolbar();
       }
     }
   });
@@ -283,16 +377,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     // Remove existing toolbar if it belongs to a different scan or if no ID provided
-    const existingToolbar = document.getElementById('ghoti-toolbar');
-    if (existingToolbar) {
-      // If it exists but we're starting a NEW scan, remove it
-      existingToolbar.remove();
-      const existingSpacer = document.getElementById('ghoti-spacer');
-      if (existingSpacer) existingSpacer.remove();
-    }
+    removeToolbar();
 
     // Analyze
     analyzePage(incomingScanId);
+    sendResponse({ success: true });
+  } else if (request.type === 'SHOW_EARLY_WARNING') {
+    const incomingScanId = request.scanId;
+    injectToolbar('known_phishing', incomingScanId);
     sendResponse({ success: true });
   } else if (request.type === 'GET_SCAN_RESULT') {
     // Return the result stored in the data attribute
@@ -308,6 +400,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
   }
   return true; // Keep channel open for async sendResponse
+});
+
+window.addEventListener('ghoti-trigger-scan', (e) => {
+  const incomingScanId = e.detail?.scanId || 'puppeteer-' + Date.now();
+  if (window[ACTIVE_SCAN_ID] === incomingScanId || window[INJECTED_TOOLBAR_ID] === incomingScanId) {
+    return;
+  }
+  removeToolbar();
+  analyzePage(incomingScanId);
 });
 
 /**
@@ -362,41 +463,4 @@ function waitForDomSettle(timeout = 5000, settleTime = 1800) {
     // Start the settle timer
     resetSettleTimer();
   });
-}
-
-// Wait for page to fully load before analyzing
-async function startAnalysis() {
-  console.log('[Ghoti] Waiting for page to load...');
-
-  // First, wait for basic page load
-  if (document.readyState !== 'complete') {
-    await new Promise(resolve => {
-      if (document.readyState === 'complete') {
-        resolve();
-      } else {
-        window.addEventListener('load', resolve, { once: true });
-      }
-    });
-  }
-
-  console.log('[Ghoti] Page load event fired, waiting for DOM to settle...');
-
-  // Then wait for DOM to settle (handles SPA rendering)
-  await waitForDomSettle(5000, 1800);
-
-  console.log('[Ghoti] Starting analysis...');
-  analyzePage(null); // Initial load scan usually doesn't have an ID from background yet
-}
-
-// No automatic analysis on load.
-// Scans are now triggered by background.js (on navigation) or popup (manual).
-// startAnalysis();
-
-function ensureToolbarVisible() {
-  const toolbar = document.getElementById('ghoti-toolbar');
-  if (!toolbar || !isVisible(toolbar)) {
-    console.warn('[Ghoti] Toolbar is not visible, reinjecting...');
-    if (toolbar) toolbar.remove();
-    injectToolbar();
-  }
 }

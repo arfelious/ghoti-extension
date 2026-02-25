@@ -64,19 +64,3 @@ export const LLM_STATUS = {
     GENERATING: 'generating',
     ERROR: 'error',
 };
-
-// Prompt for phishing analysis (legacy - actual prompt is in shared/prompt-builder.js)
-export const PHISHING_ANALYSIS_PROMPT = `You are a phishing detection expert. Analyze the webpage and provide a risk assessment.
-
-CONFIDENCE SCALE (must match your reasoning):
-- 0-15: SAFE - Legitimate site with clear trust signals
-- 16-35: LOW RISK - Minor concerns but no real threats  
-- 36-55: MODERATE - Suspicious elements, needs caution
-- 56-75: HIGH RISK - Multiple phishing indicators
-- 76-100: PHISHING - Clear malicious intent detected
-
-RESPOND WITH JSON ONLY:
-{"confidence": NUMBER, "reasoning": "Your analysis"}
-
-Webpage Content:
-`;

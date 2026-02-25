@@ -121,18 +121,11 @@ export function createLLMHandler(options = {}) {
                 loadProgress = progress.progress;
 
                 // Detect activity type from text
-                // Web-LLM text usually contains "Fetching", "Loading", "Processing", etc.
                 let activity = 'loading';
                 const text = progress.text || '';
                 const lowerText = text.toLowerCase();
-
-                if (lowerText.includes('fetch') || lowerText.includes('download')) {
-                    // Only treat as downloading if it's not a quick manifest/wasm check
-                    if (lowerText.includes('config') || lowerText.includes('wasm')) {
-                        activity = 'loading';
-                    } else {
-                        activity = 'downloading';
-                    }
+                if (lowerText.includes('populate the cache')) {
+                    activity = 'downloading';
                 } else if (lowerText.includes('loading') || lowerText.includes('init')) {
                     activity = 'loading';
                 }
@@ -228,7 +221,6 @@ export function createLLMHandler(options = {}) {
         status = LLM_STATUS.GENERATING;
 
         try {
-            // Clear history and ensure engine is reset to avoid "Message error should not be 0"
             await engine.resetChat();
             chatHistory = [{ role: 'user', content: message }];
 

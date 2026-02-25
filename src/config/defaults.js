@@ -17,13 +17,18 @@ export const DEFAULTS = {
     preloadLLM: true,                     // Pre-load LLM model on startup to reduce initial scan delay
     unloadAfterInactivity: false,         // Auto-unload model after 30 minutes of inactivity
     blockUntilScanned: false,             // Block page until scan completes
+    blockOnSuspicious: false,             // Block inputs if page is suspicious
     cacheScannedPages: false,             // Cache results for previously scanned pages
     sendPageContent: true,                // Send page content from extension instead of server fetching
+    sendDomainOnlyUntilPhishing: true,    // Only send the domain for initial detection until local analysis flags it
     uploadLocalResults: false,            // Upload local analysis results to server
     isActive: true,                       // Extension active state
 
     // Testing/Development
     compareMode: false,                   // Run both local and remote for comparison
+
+    // Logging
+    maxLogs: 100,                             // Maximum number of log entries to keep in buffer
 
     // Localization
     language: "tr",
