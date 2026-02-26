@@ -22,6 +22,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 let SESSION_NONCE = null;
 
+// Track last scanned URL per tab to prevent duplicate auto-scans
+const lastScannedUrl = new Map();
+
 async function initSessionNonce() {
     const data = await chrome.storage.local.get('SESSION_NONCE');
     if (data.SESSION_NONCE) {
@@ -926,10 +929,24 @@ chrome.runtime.onStartup.addListener(async () => {
 
 // Scan on navigation
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    // Clear tracking when a new navigation starts (allows rescan on refresh)
+    if (changeInfo.status === 'loading') {
+        lastScannedUrl.delete(tabId);
+        return;
+    }
+
     // Only trigger when navigation is complete and URL is available
     if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
+        // Skip if we already scanned this exact URL in this tab
+        // (guards against duplicate 'complete' events from Chromium)
+        if (lastScannedUrl.get(tabId) === tab.url) {
+            console.log(`[Ghoti Background] Tab ${tabId} already scanned for ${tab.url}, skipping duplicate.`);
+            return;
+        }
+
         const settings = await chrome.storage.sync.get(DEFAULTS);
         if (settings.isActive) {
+            lastScannedUrl.set(tabId, tab.url);
             console.log(`[Ghoti Background] Navigation detected on tab ${tabId}, triggering scan...`);
             try {
                 // We use START_SCAN instead of RESCAN_PAGE for the automatic trigger
@@ -943,6 +960,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             }
         }
     }
+});
+
+// Clean up tracking when tabs are closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+    lastScannedUrl.delete(tabId);
 });
 
 // Initialize LLM and Session on boot
