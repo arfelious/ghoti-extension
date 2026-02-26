@@ -525,14 +525,7 @@ async function handlePageAnalysis(data, tabId) {
     let urlObj = new URL(url);
 
     // Check Settings
-    const settings = await chrome.storage.sync.get({
-        localThreshold: 30,
-        globalThreshold: 60,
-        autoScanOnStartup: false,
-        uploadLocalResults: false, // New setting for result upload
-        compareMode: false, // Run both local and remote for testing
-        sendDomainOnlyUntilPhishing: true // New setting for privacy
-    });
+    const settings = await chrome.storage.sync.get(DEFAULTS);
 
     // Auto-enable compareMode when running under Puppeteer/automation
     if (automatedMode) {
@@ -815,6 +808,11 @@ async function handlePageAnalysis(data, tabId) {
         console.error('[Ghoti Background] Remote Analysis failed:', error);
         // Fallback to local result if remote fails?
         if (!localAnalysis.error) {
+            // Determine fallback threshold: custom if enabled, otherwise use global threshold
+            const fallbackThreshold = settings.useCustomFallbackThreshold
+                ? settings.localFallbackThreshold
+                : settings.globalThreshold;
+
             // Update stats for local fallback
             await updateStats({
                 scan: {
@@ -823,8 +821,8 @@ async function handlePageAnalysis(data, tabId) {
                     confidence: localSuspicion,
                     localConfidence: localSuspicion,
                     remoteConfidence: null,
-                    isPhishing: localSuspicion > settings.localThreshold,
-                    source: 'local'
+                    isPhishing: localSuspicion > fallbackThreshold,
+                    source: 'local-fallback'
                 }
             });
 
@@ -835,7 +833,7 @@ async function handlePageAnalysis(data, tabId) {
                 localResult: {
                     finalRating: localSuspicion,
                     response: localAnalysis.reasoning || "Local analysis result",
-                    source: "local",
+                    source: "local-fallback",
                     error: localAnalysis.error || null
                 }
             };

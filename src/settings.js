@@ -28,6 +28,36 @@ async function loadSettings() {
     document.getElementById('unloadAfterInactivity').checked = settings.unloadAfterInactivity;
     document.getElementById('uploadLocalResults').checked = settings.uploadLocalResults;
     document.getElementById('maxLogs').value = settings.maxLogs;
+
+    // Block settings
+    document.getElementById('blockUntilScanned').checked = settings.blockUntilScanned;
+    document.getElementById('blockOnSuspicious').checked = settings.blockOnSuspicious;
+    updateBlockWarning();
+
+    // Fallback threshold
+    document.getElementById('useCustomFallbackThreshold').checked = settings.useCustomFallbackThreshold;
+    document.getElementById('fallbackThresholdSlider').value = settings.localFallbackThreshold;
+    document.getElementById('fallbackThresholdVal').textContent = settings.localFallbackThreshold;
+    updateFallbackSliderState();
+}
+
+function updateBlockWarning() {
+    const row = document.getElementById('blockUntilScannedRow');
+    const blockUntilScanned = document.getElementById('blockUntilScanned').checked;
+    const blockOnSuspicious = document.getElementById('blockOnSuspicious').checked;
+    if (blockUntilScanned && !blockOnSuspicious) {
+        row.classList.add('warning');
+    } else {
+        row.classList.remove('warning');
+    }
+}
+
+function updateFallbackSliderState() {
+    const enabled = document.getElementById('useCustomFallbackThreshold').checked;
+    const sliderGroup = document.querySelector('#fallbackSliderRow .slider-group-settings');
+    if (sliderGroup) {
+        sliderGroup.classList.toggle('disabled', !enabled);
+    }
 }
 
 async function loadStats() {
@@ -173,6 +203,35 @@ function setupEventListeners() {
 
     document.getElementById('uploadLocalResults').addEventListener('change', async (e) => {
         await chrome.storage.sync.set({ uploadLocalResults: e.target.checked });
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    // Block settings
+    document.getElementById('blockUntilScanned').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ blockUntilScanned: e.target.checked });
+        updateBlockWarning();
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('blockOnSuspicious').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ blockOnSuspicious: e.target.checked });
+        updateBlockWarning();
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    // Fallback threshold
+    document.getElementById('useCustomFallbackThreshold').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ useCustomFallbackThreshold: e.target.checked });
+        updateFallbackSliderState();
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    const fallbackSlider = document.getElementById('fallbackThresholdSlider');
+    fallbackSlider.addEventListener('input', () => {
+        document.getElementById('fallbackThresholdVal').textContent = fallbackSlider.value;
+    });
+    fallbackSlider.addEventListener('change', async () => {
+        await chrome.storage.sync.set({ localFallbackThreshold: parseInt(fallbackSlider.value) });
         showStatus('Ayarlar kaydedildi');
     });
 

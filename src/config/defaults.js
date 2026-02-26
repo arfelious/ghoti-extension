@@ -13,7 +13,7 @@ export const DEFAULTS = {
     alwaysShowRating: false,              // Always show toolbar with rating
 
     // Behavior options
-    autoScanOnStartup: false,             // Automatically scan all open tabs when the browser starts
+    autoScanOnStartup: false,             // Automatically scan all open tabs when the browser starts TODO: true on PROD
     preloadLLM: true,                     // Pre-load LLM model on startup to reduce initial scan delay
     unloadAfterInactivity: false,         // Auto-unload model after 30 minutes of inactivity
     blockUntilScanned: false,             // Block page until scan completes
@@ -23,6 +23,10 @@ export const DEFAULTS = {
     sendDomainOnlyUntilPhishing: true,    // Only send the domain for initial detection until local analysis flags it
     uploadLocalResults: false,            // Upload local analysis results to server
     isActive: true,                       // Extension active state
+
+    // Fallback
+    useCustomFallbackThreshold: false,    // Use a separate threshold when server is unavailable
+    localFallbackThreshold: 60,           // Custom threshold for local-fallback decisions (0-100)
 
     // Testing/Development
     compareMode: false,                   // Run both local and remote for comparison

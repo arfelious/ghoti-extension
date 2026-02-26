@@ -41,16 +41,10 @@ async function loadSettings() {
         // Checkboxes
         document.getElementById('checkbox1').checked = result.showConfidenceWhenSuspicious;
         document.getElementById('checkbox2').checked = result.alwaysShowRating;
-        document.getElementById('checkbox3').checked = result.blockUntilScanned;
+        document.getElementById('checkbox-block-combined').checked = result.blockUntilScanned || result.blockOnSuspicious;
         document.getElementById('checkbox4').checked = result.cacheScannedPages;
         document.getElementById('checkbox5').checked = result.sendPageContent;
         document.getElementById('checkbox6').checked = result.sendDomainOnlyUntilPhishing;
-
-        const cb7 = document.getElementById('checkbox7');
-        if (cb7) cb7.checked = result.blockOnSuspicious;
-
-        // Optional logic: maybe warn if blockOnSuspicious is on but blockUntilScanned isn't? 
-        // We'll just tie them to the storage directly for now. !== false; // default true
         document.getElementById('active-checkbox').checked = result.isActive;
 
         // Panel expansion state
@@ -79,11 +73,11 @@ async function saveSettings() {
             globalThreshold: parseInt(document.getElementById('slider2').value),
             showConfidenceWhenSuspicious: document.getElementById('checkbox1').checked,
             alwaysShowRating: document.getElementById('checkbox2').checked,
-            blockUntilScanned: document.getElementById('checkbox3').checked,
+            blockUntilScanned: document.getElementById('checkbox-block-combined').checked,
+            blockOnSuspicious: document.getElementById('checkbox-block-combined').checked,
             cacheScannedPages: document.getElementById('checkbox4').checked,
             sendPageContent: document.getElementById('checkbox5').checked,
             sendDomainOnlyUntilPhishing: document.getElementById('checkbox6').checked,
-            blockOnSuspicious: document.getElementById('checkbox7') ? document.getElementById('checkbox7').checked : false,
             isActive: document.getElementById('active-checkbox').checked,
             language: "tr",
             expandedLeft: document.body.dataset.expandedLeft === 'true',
@@ -123,12 +117,10 @@ function setupEventListeners() {
     // Checkboxes
     document.getElementById('checkbox1').addEventListener('change', saveSettings);
     document.getElementById('checkbox2').addEventListener('change', saveSettings);
-    document.getElementById('checkbox3').addEventListener('change', saveSettings);
+    document.getElementById('checkbox-block-combined').addEventListener('change', saveSettings);
     document.getElementById('checkbox4').addEventListener('change', saveSettings);
     document.getElementById('checkbox5').addEventListener('change', saveSettings);
     document.getElementById('checkbox6').addEventListener('change', saveSettings);
-    const cb7 = document.getElementById('checkbox7');
-    if (cb7) cb7.addEventListener('change', saveSettings);
     document.getElementById('active-checkbox').addEventListener('change', saveSettings);
 
     // Action buttons (main)

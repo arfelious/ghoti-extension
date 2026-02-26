@@ -80,6 +80,58 @@
                     </label>
                 </div>
             </div>
+
+            <div class="card">
+                <h2>🛡️ Giriş Engelleme</h2>
+
+                <div class="setting-row" id="blockUntilScannedRow">
+                    <div class="setting-info">
+                        <span class="setting-name">Taranana Kadar Girişleri Engelle</span>
+                        <div class="setting-desc">Sayfa taranana kadar tüm giriş alanlarını devre dışı bırakır, tarama bitince açılır.</div>
+                        <div class="setting-warning" id="blockWarning">⚠️ Bu ayar açıkken "Şüpheli Sayfalarda Engelle" kapalı. Tarama bitince girişler her durumda açılacak — muhtemelen istediğiniz davranış bu değil.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="blockUntilScanned">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Şüpheli Sayfalarda Girişleri Engelle</span>
+                        <div class="setting-desc">Phishing tespit edildiğinde giriş alanlarını devre dışı bırakır.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="blockOnSuspicious">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🔄 Yedek Analiz Eşiği</h2>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Sunucu Erişilemediğinde Özel Yerel Eşik Kullan</span>
+                        <div class="setting-desc">Kapalıysa sunucu eşiği (Genel Eşik) yedek analiz kararları için de kullanılır.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="useCustomFallbackThreshold">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row" id="fallbackSliderRow">
+                    <div class="setting-info slider-group-settings disabled">
+                        <label for="fallbackThresholdSlider">
+                            <span class="setting-name">Yedek Eşik: <span id="fallbackThresholdVal">60</span>%</span>
+                        </label>
+                        <div class="setting-desc">Sunucu erişilemediğinde yerel analiz sonucu bu eşikle değerlendirilir.</div>
+                        <input type="range" id="fallbackThresholdSlider" min="0" max="100" value="60" class="settings-range">
+                    </div>
+                </div>
+            </div>
         </main>
 
         <!-- Model Tab -->
