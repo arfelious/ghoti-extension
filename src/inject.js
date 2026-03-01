@@ -464,3 +464,13 @@ function waitForDomSettle(timeout = 5000, settleTime = 1800) {
     resetSettleTimer();
   });
 }
+
+// Announce to the background script that we are injected and ready to receive messages
+try {
+  chrome.runtime.sendMessage({
+    type: 'CONTENT_SCRIPT_READY',
+    url: window.location.href
+  });
+} catch (e) {
+  // Extension context might be invalid if it was updated
+}

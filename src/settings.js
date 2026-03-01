@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     await loadSettings();
+    await loadExemptList();
     await loadStats();
     await loadServerStats();
     await loadModelInfo();
@@ -25,6 +26,7 @@ async function loadSettings() {
     const settings = await chrome.storage.sync.get(DEFAULTS);
     document.getElementById('autoScan').checked = settings.autoScanOnStartup;
     document.getElementById('preloadLLM').checked = settings.preloadLLM;
+    document.getElementById('scanOnSpaNavigation').checked = settings.scanOnSpaNavigation;
     document.getElementById('unloadAfterInactivity').checked = settings.unloadAfterInactivity;
     document.getElementById('uploadLocalResults').checked = settings.uploadLocalResults;
     document.getElementById('maxLogs').value = settings.maxLogs;
@@ -196,6 +198,11 @@ function setupEventListeners() {
         showStatus('Ayarlar kaydedildi');
     });
 
+    document.getElementById('scanOnSpaNavigation').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ scanOnSpaNavigation: e.target.checked });
+        showStatus('Ayarlar kaydedildi');
+    });
+
     document.getElementById('unloadAfterInactivity').addEventListener('change', async (e) => {
         await chrome.storage.sync.set({ unloadAfterInactivity: e.target.checked });
         showStatus('Ayarlar kaydedildi');
@@ -309,6 +316,12 @@ function setupEventListeners() {
 
     document.getElementById('downloadLogsBtn').addEventListener('click', downloadLogs);
 
+    // Exempt list
+    document.getElementById('addExemptBtn').addEventListener('click', handleAddExempt);
+    document.getElementById('exemptDomainInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleAddExempt();
+    });
+
     // Event delegation for dynamically added buttons (CSP fix)
     document.addEventListener('click', (e) => {
         // Handle preset model add
@@ -323,6 +336,13 @@ function setupEventListeners() {
         if (removeCustomBtn) {
             const modelId = removeCustomBtn.dataset.modelId;
             window.removeCustomModel(modelId);
+        }
+
+        // Handle exempt domain remove
+        const removeExemptBtn = e.target.closest('[data-action="remove-exempt"]');
+        if (removeExemptBtn) {
+            const domain = removeExemptBtn.dataset.domain;
+            handleRemoveExempt(domain);
         }
     });
 }
@@ -721,5 +741,57 @@ function showStatus(msg, type = 'success') {
         el.textContent = msg;
         el.className = `status-msg ${type === 'error' ? 'error' : ''} show`;
         setTimeout(() => el.classList.remove('show'), 3000);
+    }
+}
+
+// ---- Whitelist Exemptions ----
+
+async function loadExemptList() {
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'GET_EXEMPT_LIST' });
+        renderExemptList(response.exemptions || []);
+    } catch (e) {
+        console.error('Error loading exempt list:', e);
+    }
+}
+
+function renderExemptList(exemptions) {
+    const container = document.getElementById('exemptList');
+    if (!exemptions.length) {
+        container.innerHTML = '<span class="empty-state" style="font-size:13px;">Henüz istisna eklenmedi.</span>';
+        return;
+    }
+    container.innerHTML = exemptions.map(domain =>
+        `<span class="exempt-chip">${domain}<button data-action="remove-exempt" data-domain="${domain}" title="Kaldır">&times;</button></span>`
+    ).join('');
+}
+
+async function handleAddExempt() {
+    const input = document.getElementById('exemptDomainInput');
+    const domain = input.value.trim().toLowerCase();
+    if (!domain) return;
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'ADD_EXEMPT_DOMAIN', domain });
+        if (response.success) {
+            input.value = '';
+            renderExemptList(response.exemptions);
+            showStatus('İstisna eklendi');
+        } else {
+            showStatus(response.error || 'Eklenemedi', 'error');
+        }
+    } catch (e) {
+        showStatus('Hata: ' + e.message, 'error');
+    }
+}
+
+async function handleRemoveExempt(domain) {
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'REMOVE_EXEMPT_DOMAIN', domain });
+        if (response.success) {
+            renderExemptList(response.exemptions);
+            showStatus('İstisna kaldırıldı');
+        }
+    } catch (e) {
+        showStatus('Hata: ' + e.message, 'error');
     }
 }

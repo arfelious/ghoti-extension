@@ -18,10 +18,11 @@ export const DEFAULTS = {
     unloadAfterInactivity: false,         // Auto-unload model after 30 minutes of inactivity
     blockUntilScanned: false,             // Block page until scan completes
     blockOnSuspicious: false,             // Block inputs if page is suspicious
-    cacheScannedPages: false,             // Cache results for previously scanned pages
+    cacheScannedPages: true,             // Cache results for previously scanned pages
     sendPageContent: true,                // Send page content from extension instead of server fetching
     sendDomainOnlyUntilPhishing: true,    // Only send the domain for initial detection until local analysis flags it
     uploadLocalResults: false,            // Upload local analysis results to server
+    scanOnSpaNavigation: false,           // Trigger scans on in-page URL changes (SPAs) 
     isActive: true,                       // Extension active state
 
     // Fallback
@@ -30,6 +31,15 @@ export const DEFAULTS = {
 
     // Testing/Development
     compareMode: false,                   // Run both local and remote for comparison
+
+    // Whitelist exemptions — subdomains that should be analyzed even if their parent is whitelisted
+    whitelistExemptions: [
+        'sites.google.com',       // Google Sites — anyone can publish pages
+        'forms.google.com',       // Google Forms — used for credential harvesting
+        'groups.google.com',      // Google Groups — public posts with arbitrary links
+        'docs.google.com',        // Google Docs/Sheets — phishing documents shared publicly
+        'drive.google.com',       // Google Drive — shared phishing files/pages
+    ],
 
     // Logging
     maxLogs: 100,                             // Maximum number of log entries to keep in buffer

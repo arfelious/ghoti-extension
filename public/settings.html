@@ -58,6 +58,18 @@
 
                 <div class="setting-row">
                     <div class="setting-info">
+                        <span class="setting-name">SPA Yönlendirmelerinde Tara</span>
+                        <div class="setting-desc">Sayfa yenilenmeden gerçekleşen link tıklamalarında (Örn. YouTube,
+                            React/Vue siteleri) taramayı tetikler. Kaynak kullanımını artırabilir.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="scanOnSpaNavigation">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
                         <span class="setting-name">Eylemsizlik Durumunda Modeli Geçici Olarak Devre Dışı Bırak</span>
                         <div class="setting-desc">Bellek tasarrufu için 30 dakika eylemsizlikten sonra AI modelini
                             bellekten çıkartır.</div>
@@ -87,8 +99,11 @@
                 <div class="setting-row" id="blockUntilScannedRow">
                     <div class="setting-info">
                         <span class="setting-name">Taranana Kadar Bilgi Girilmesini Engelle</span>
-                        <div class="setting-desc">Sayfa taranana kadar tüm giriş alanlarını devre dışı bırakır, tarama bitince açılır.</div>
-                        <div class="setting-warning" id="blockWarning">⚠️ Bu ayar açıkken "Şüpheli Sayfalarda Engelle" kapalı. Tarama bitince girişler her durumda açılacak — muhtemelen istediğiniz davranış bu değil.</div>
+                        <div class="setting-desc">Sayfa taranana kadar tüm giriş alanlarını devre dışı bırakır, tarama
+                            bitince açılır.</div>
+                        <div class="setting-warning" id="blockWarning">⚠️ Bu ayar açıkken "Şüpheli Sayfalarda Engelle"
+                            kapalı. Tarama bitince girişler her durumda açılacak — muhtemelen istediğiniz davranış bu
+                            değil.</div>
                     </div>
                     <label class="switch">
                         <input type="checkbox" id="blockUntilScanned">
@@ -114,7 +129,8 @@
                 <div class="setting-row">
                     <div class="setting-info">
                         <span class="setting-name">Sunucu Erişilemediğinde Özel Yerel Eşik Kullan</span>
-                        <div class="setting-desc">Kapalıysa sunucu eşiği (Genel Eşik) yedek analiz kararları için de kullanılır.</div>
+                        <div class="setting-desc">Kapalıysa sunucu eşiği (Genel Eşik) yedek analiz kararları için de
+                            kullanılır.</div>
                     </div>
                     <label class="switch">
                         <input type="checkbox" id="useCustomFallbackThreshold">
@@ -127,9 +143,24 @@
                         <label for="fallbackThresholdSlider">
                             <span class="setting-name">Yedek Eşik: <span id="fallbackThresholdVal">60</span>%</span>
                         </label>
-                        <div class="setting-desc">Sunucu erişilemediğinde yerel analiz sonucu bu eşikle değerlendirilir.</div>
-                        <input type="range" id="fallbackThresholdSlider" min="0" max="100" value="60" class="settings-range">
+                        <div class="setting-desc">Sunucu erişilemediğinde yerel analiz sonucu bu eşikle değerlendirilir.
+                        </div>
+                        <input type="range" id="fallbackThresholdSlider" min="0" max="100" value="60"
+                            class="settings-range">
                     </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🔓 Beyaz Liste İstisnaları</h2>
+                <div class="setting-desc" style="margin-bottom: 16px;">
+                    Ana alan adı beyaz listede olsa bile taranması gereken alt alan adları.
+                    Örneğin <code>sites.google.com</code> kullanıcı içeriği barındırdığından analiz edilmelidir.
+                </div>
+                <div id="exemptList" class="exempt-list"></div>
+                <div style="display: flex; gap: 10px; margin-top: 16px;">
+                    <input type="text" id="exemptDomainInput" placeholder="Örn: sites.google.com" style="flex: 1;">
+                    <button id="addExemptBtn" class="btn btn-primary">Ekle</button>
                 </div>
             </div>
         </main>

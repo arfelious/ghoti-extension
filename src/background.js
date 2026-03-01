@@ -20,10 +20,40 @@ chrome.storage.onChanged.addListener((changes, area) => {
         MAX_LOGS = changes.maxLogs.newValue;
     }
 });
+
+// Global state
+let analysisResult = null;
+let currentTabId = null;
+let llmLoaded = false;
+let llmLoadingPromise = null;
+
 let SESSION_NONCE = null;
 
-// Track last scanned URL per tab to prevent duplicate auto-scans
+// Track last scanned URL per tab to prevent duplicate scans
 const lastScannedUrl = new Map();
+
+// Track tabs that need scanning but wasn't ready to receive START_SCAN
+const pendingScans = new Map();
+
+// Track per-tab scan status so popup can query it on open
+const tabScanStatus = new Map();
+
+// Cache scan results for cacheScannedPages setting
+const pageCache = new Map(); // url -> { timestamp, result }
+
+// Generate unique scan ID
+function generateScanId() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+
+/**
+ * Broadcast scan progress to both the content script (tab) and popup/extension views.
+ */
+function broadcastScanProgress(tabId, status, message) {
+    tabScanStatus.set(tabId, { status, message, timestamp: Date.now() });
+    chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status, message }).catch(() => { });
+    chrome.runtime.sendMessage({ type: 'SCAN_PROGRESS', tabId, status, message }).catch(() => { });
+}
 
 async function initSessionNonce() {
     const data = await chrome.storage.local.get('SESSION_NONCE');
@@ -52,10 +82,6 @@ async function initSessionNonce() {
     } catch (e) {
         console.warn('[Ghoti Background] Failed to register session with server:', e.message);
     }
-}
-
-function generateScanId() {
-    return `${SESSION_NONCE}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 }
 
 function addBufferedLog(type, message) {
@@ -288,21 +314,47 @@ let dbInitPromise = new Promise(async (resolve, reject) => {
     }
 });
 
+/**
+ * Get candidate domains for whitelist lookup.
+ * For "www.google.com" returns ["www.google.com", "google.com"].
+ * For "policies.google.com" returns ["policies.google.com", "google.com"].
+ * Respects multi-part TLDs like .com.tr, .co.uk.
+ */
+function getWhitelistCandidates(hostname) {
+    const candidates = [hostname];
+    const parts = hostname.split('.');
+    // Determine how many parts the TLD occupies
+    const tldParts = (parts.length >= 3 && parts[parts.length - 2].length <= 3) ? 3 : 2;
+    // Strip subdomains progressively down to root+TLD
+    for (let i = 1; i <= parts.length - tldParts; i++) {
+        candidates.push(parts.slice(i).join('.'));
+    }
+    return candidates;
+}
+
 let domainExistsInWhitelist = async (domain, skipInit = false) => {
     if (!skipInit) await dbInitPromise;
+    const candidates = getWhitelistCandidates(domain);
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(whitelistDbName, 1);
         request.onsuccess = (event) => {
             const db = event.target.result;
             const transaction = db.transaction('whitelist', 'readonly');
             const objectStore = transaction.objectStore('whitelist');
-            const getRequest = objectStore.get(domain);
-            getRequest.onsuccess = (event) => {
-                resolve(!!event.target.result);
-            };
-            getRequest.onerror = (event) => {
-                reject(event.target.error);
-            };
+            let remaining = candidates.length;
+            let found = false;
+            for (const candidate of candidates) {
+                const getRequest = objectStore.get(candidate);
+                getRequest.onsuccess = (event) => {
+                    if (event.target.result) found = true;
+                    remaining--;
+                    if (remaining === 0) resolve(found);
+                };
+                getRequest.onerror = (event) => {
+                    remaining--;
+                    if (remaining === 0) resolve(found);
+                };
+            }
         };
         request.onerror = (event) => {
             reject(event.target.error);
@@ -375,6 +427,82 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ success: true });
         });
         return true;
+    }
+
+    // Whitelist exemption management
+    if (request.type === 'GET_EXEMPT_LIST') {
+        chrome.storage.sync.get({ whitelistExemptions: DEFAULTS.whitelistExemptions }, (data) => {
+            sendResponse({ exemptions: data.whitelistExemptions });
+        });
+        return true;
+    }
+
+    if (request.type === 'ADD_EXEMPT_DOMAIN') {
+        chrome.storage.sync.get({ whitelistExemptions: DEFAULTS.whitelistExemptions }, (data) => {
+            const list = data.whitelistExemptions || [];
+            const domain = request.domain?.trim().toLowerCase();
+            if (domain && !list.includes(domain)) {
+                list.push(domain);
+                chrome.storage.sync.set({ whitelistExemptions: list }, () => {
+                    sendResponse({ success: true, exemptions: list });
+                });
+            } else {
+                sendResponse({ success: false, exemptions: list, error: 'Zaten listede veya geçersiz.' });
+            }
+        });
+        return true;
+    }
+
+    if (request.type === 'GET_SCAN_STATUS') {
+        chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+            if (tab && tabScanStatus.has(tab.id)) {
+                sendResponse({ scanning: true, ...tabScanStatus.get(tab.id) });
+            } else {
+                sendResponse({ scanning: false });
+            }
+        });
+        return true;
+    }
+
+    if (request.type === 'REMOVE_EXEMPT_DOMAIN') {
+        chrome.storage.sync.get({ whitelistExemptions: DEFAULTS.whitelistExemptions }, (data) => {
+            const list = (data.whitelistExemptions || []).filter(d => d !== request.domain);
+            chrome.storage.sync.set({ whitelistExemptions: list }, () => {
+                sendResponse({ success: true, exemptions: list });
+            });
+        });
+        return true;
+    }
+
+    if (request.type === 'CONTENT_SCRIPT_READY') {
+        const tabId = sender.tab?.id;
+        const url = request.url || sender.tab?.url;
+
+        if (tabId && url) {
+            console.log(`[Ghoti Background] Content script ready acknowledged for tab ${tabId} (${url})`);
+
+            // Only trigger a scan if we explicitly queued this tab because it failed the initial onUpdated attempt
+            // OR if autoScanOnStartup is enabled and we haven't scanned it yet
+            chrome.storage.sync.get(DEFAULTS, (settings) => {
+                if (settings.isActive) {
+                    if (pendingScans.get(tabId) === url || (settings.autoScanOnStartup && lastScannedUrl.get(tabId) !== url)) {
+                        // Move from pending to scanned
+                        pendingScans.delete(tabId);
+                        lastScannedUrl.set(tabId, url);
+
+                        console.log(`[Ghoti Background] Late injection or auto-startup scan triggered on tab ${tabId}`);
+                        chrome.tabs.sendMessage(tabId, {
+                            type: 'START_SCAN',
+                            scanId: generateScanId()
+                        }).catch(() => { });
+                    } else if (!settings.autoScanOnStartup) {
+                        console.log(`[Ghoti Background] Tab ${tabId} ready, but no pending scan required`);
+                    }
+                }
+            });
+        }
+        sendResponse({ success: true });
+        return false; // synchronous response
     }
 });
 let urlInWhiteList = async (url) => {
@@ -459,7 +587,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             try {
                 const analysis = JSON.parse(jsonStr);
                 if (analysis.verdict !== undefined && analysis.severity !== undefined) {
-                    confidence = verdictToScore(analysis.verdict, analysis.severity);
+                    confidence = verdictToScore(analysis.verdict, analysis.severity, reasoning);
                 } else {
                     confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence !== undefined ? analysis.confidence : analysis.score !== undefined ? analysis.score : 0);
                 }
@@ -473,7 +601,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 const scoreMatch = jsonStr.match(/"?score"?\s*:\s*(\d+)/i);
 
                 if (verdictMatch && severityMatch) {
-                    confidence = verdictToScore(verdictMatch[1], parseInt(severityMatch[1]));
+                    confidence = verdictToScore(verdictMatch[1], parseInt(severityMatch[1]), reasoning);
                 } else if (riskMatch) {
                     confidence = parseInt(riskMatch[1]);
                 } else if (confMatch) {
@@ -533,7 +661,14 @@ async function handlePageAnalysis(data, tabId) {
         console.log('[Ghoti Background] Automated mode detected - compareMode enabled');
     }
 
-    let domainInWhitelist = await domainExistsInWhitelist(urlObj.hostname);
+    // Check if domain is exempt from whitelist (e.g. sites.google.com hosts user content)
+    const exemptions = settings.whitelistExemptions || [];
+    const domainIsExempt = getWhitelistCandidates(urlObj.hostname).some(c => exemptions.includes(c));
+    if (domainIsExempt) {
+        console.log('[Ghoti Background] Domain is exempt from whitelist, forcing analysis:', urlObj.hostname);
+    }
+
+    let domainInWhitelist = !domainIsExempt && await domainExistsInWhitelist(urlObj.hostname);
     if (domainInWhitelist) {
         console.log('[Ghoti Background] Domain in whitelist, skipping analysis:', urlObj.hostname);
         return { success: true, whoisResult: null, queryResult: { finalRating: 0, response: "Domain is whitelisted." } };
@@ -544,6 +679,38 @@ async function handlePageAnalysis(data, tabId) {
         return { success: true, whoisResult: null, queryResult: { finalRating: 0, response: "URL is whitelisted." } }
     }
 
+    // Check Cache
+    if (settings.cacheScannedPages && pageCache.has(urlObj.href)) {
+        const cached = pageCache.get(urlObj.href);
+        if (Date.now() - cached.timestamp < 3600000) { // 1 hour
+            console.log('[Ghoti Background] Returning cached result for:', urlObj.href);
+            // Broadcast completion
+            tabScanStatus.delete(tabId);
+            chrome.runtime.sendMessage({
+                type: 'SCAN_COMPLETE',
+                tabId: tabId,
+                result: cached.result
+            }).catch(() => { });
+            return cached.result;
+        } else {
+            pageCache.delete(urlObj.href);
+        }
+    }
+
+    // Helper to finalize, cache, broadcast, and return
+    const finalizeAndReturn = (result) => {
+        if (settings.cacheScannedPages && result.success && result.localResult?.source !== 'error') {
+            pageCache.set(urlObj.href, { timestamp: Date.now(), result });
+        }
+        tabScanStatus.delete(tabId);
+        chrome.runtime.sendMessage({
+            type: 'SCAN_COMPLETE',
+            tabId: tabId,
+            result: result
+        }).catch(() => { });
+        return result;
+    };
+
     console.log('[Ghoti Background] Analyzing page:', url);
     console.log('[Ghoti Background] Extracted data:', extractedData);
 
@@ -551,7 +718,7 @@ async function handlePageAnalysis(data, tabId) {
     let whoisData = null;
     let isKnownPhishing = false;
     try {
-        chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'fetching_init', message: 'Sunucuyla iletişim kuruluyor...' }).catch(() => { });
+        broadcastScanProgress(tabId, 'fetching_init', 'Sunucuyla iletişim kuruluyor...');
         let payloadUrl = settings.sendDomainOnlyUntilPhishing ? urlObj.hostname : url;
         const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
         const initResponse = await fetch(REMOTE_INIT, {
@@ -581,7 +748,7 @@ async function handlePageAnalysis(data, tabId) {
     }
 
     // 1. Run Local Analysis (with WHOIS data)
-    chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'local_analysis', message: 'Yerel analiz yapılıyor...' }).catch(() => { });
+    broadcastScanProgress(tabId, 'local_analysis', 'Yerel analiz yapılıyor...');
     const localAnalysis = await analyzeWithLocalLLM(url, extractedData, whoisData, settings.localThreshold);
     console.log('[Ghoti Background] Local Analysis Result:', localAnalysis);
 
@@ -640,14 +807,7 @@ async function handlePageAnalysis(data, tabId) {
             }
         };
 
-        // Broadcast completion
-        chrome.runtime.sendMessage({
-            type: 'SCAN_COMPLETE',
-            tabId: tabId,
-            result: result
-        }).catch(() => { });
-
-        return result;
+        return finalizeAndReturn(result);
     }
 
     // If in compareMode, log that we're running both
@@ -660,7 +820,7 @@ async function handlePageAnalysis(data, tabId) {
     }
 
     try {
-        chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status: 'remote_analysis', message: 'Sunucu-tabanlı analiz yapılıyor...' }).catch(() => { });
+        broadcastScanProgress(tabId, 'remote_analysis', 'Sunucu-tabanlı analiz yapılıyor...');
         // Reuse the WHOIS data we already fetched for local analysis
         const whoisResult = whoisData;
         const queryPromise = new Promise((resolve, reject) => {
@@ -774,14 +934,7 @@ async function handlePageAnalysis(data, tabId) {
                 }
             };
 
-            // Broadcast completion
-            chrome.runtime.sendMessage({
-                type: 'SCAN_COMPLETE',
-                tabId: tabId,
-                result: result
-            }).catch(() => { });
-
-            return result;
+            return finalizeAndReturn(result);
         }
 
         const result = {
@@ -796,14 +949,7 @@ async function handlePageAnalysis(data, tabId) {
             }
         };
 
-        // Broadcast completion to all extension views (including popup)
-        chrome.runtime.sendMessage({
-            type: 'SCAN_COMPLETE',
-            tabId: tabId,
-            result: result
-        }).catch(() => { });
-
-        return result;
+        return finalizeAndReturn(result);
     } catch (error) {
         console.error('[Ghoti Background] Remote Analysis failed:', error);
         // Fallback to local result if remote fails?
@@ -838,14 +984,7 @@ async function handlePageAnalysis(data, tabId) {
                 }
             };
 
-            // Broadcast completion (remote failed, falling back to local)
-            chrome.runtime.sendMessage({
-                type: 'SCAN_COMPLETE',
-                tabId: tabId,
-                result: result
-            }).catch(() => { });
-
-            return result;
+            return finalizeAndReturn(result);
         }
 
         // Both local and remote failed - return graceful error instead of throwing
@@ -862,13 +1001,7 @@ async function handlePageAnalysis(data, tabId) {
             }
         };
 
-        chrome.runtime.sendMessage({
-            type: 'SCAN_COMPLETE',
-            tabId: tabId,
-            result: errorResult
-        }).catch(() => { });
-
-        return errorResult;
+        return finalizeAndReturn(errorResult);
     }
 }
 
@@ -914,10 +1047,13 @@ chrome.runtime.onStartup.addListener(async () => {
         const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
         for (const tab of tabs) {
             try {
+                // If it succeeds, mark as scanned. If it fails, CONTENT_SCRIPT_READY will catch it when we visit the tab
                 chrome.tabs.sendMessage(tab.id, {
                     type: 'START_SCAN',
                     scanId: generateScanId()
-                });
+                }).then(() => {
+                    if (tab.url) lastScannedUrl.set(tab.id, tab.url);
+                }).catch(() => { });
             } catch (e) {
                 // Content script might not be ready
             }
@@ -928,34 +1064,46 @@ chrome.runtime.onStartup.addListener(async () => {
 // Scan on navigation
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // Clear tracking when a new navigation starts (allows rescan on refresh)
-    if (changeInfo.status === 'loading') {
+    if (changeInfo.status === 'loading' && !changeInfo.url) {
+        // We only clear if it's a structural load, not just a URL fragment change/SPA
+        // Setting it here might be too aggressive if SPAs trigger loading status
         lastScannedUrl.delete(tabId);
+        pendingScans.delete(tabId);
         return;
     }
 
-    // Only trigger when navigation is complete and URL is available
-    if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
+    const settings = await chrome.storage.sync.get(DEFAULTS);
+
+    // Trigger on full page load completion OR SPA URL change (if enabled)
+    const isCompleteLoad = changeInfo.status === 'complete' && tab.url;
+    const isUrlChange = changeInfo.url !== undefined && tab.status === 'complete';
+
+    // If not a full load, ensure SPA scanning is permitted
+    const shouldTriggerBasedOnNavType = isCompleteLoad || (isUrlChange && settings.scanOnSpaNavigation);
+
+    if (shouldTriggerBasedOnNavType && tab.url && tab.url.startsWith('http')) {
         // Skip if we already scanned this exact URL in this tab
-        // (guards against duplicate 'complete' events from Chromium)
         if (lastScannedUrl.get(tabId) === tab.url) {
             console.log(`[Ghoti Background] Tab ${tabId} already scanned for ${tab.url}, skipping duplicate.`);
             return;
         }
 
-        const settings = await chrome.storage.sync.get(DEFAULTS);
         if (settings.isActive) {
-            lastScannedUrl.set(tabId, tab.url);
-            console.log(`[Ghoti Background] Navigation detected on tab ${tabId}, triggering scan...`);
-            try {
-                // We use START_SCAN instead of RESCAN_PAGE for the automatic trigger
-                chrome.tabs.sendMessage(tabId, {
-                    type: 'START_SCAN',
-                    scanId: generateScanId()
-                });
-            } catch (e) {
-                // Content script not yet ready, it will trigger itself via load event if we hadn't removed it
-                // Wait, if it's a fresh injection, the content script will be there.
-            }
+            console.log(`[Ghoti Background] Navigation detected on tab ${tabId} (URL: ${tab.url}), triggering scan...`);
+
+            // Try sending immediately. If it fails, inject.js will send CONTENT_SCRIPT_READY later
+            chrome.tabs.sendMessage(tabId, {
+                type: 'START_SCAN',
+                scanId: generateScanId()
+            }).then(() => {
+                // Success - script was already there
+                lastScannedUrl.set(tabId, tab.url);
+                pendingScans.delete(tabId);
+            }).catch(() => {
+                // Failed - script not injected yet. Add to pending scans so CONTENT_SCRIPT_READY will handle it.
+                pendingScans.set(tabId, tab.url);
+                console.log(`[Ghoti Background] Tab ${tabId} not ready, queued in pendingScans to wait for CONTENT_SCRIPT_READY`);
+            });
         }
     }
 });

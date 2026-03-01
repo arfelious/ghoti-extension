@@ -612,3 +612,40 @@ select:focus {
   cursor: pointer;
   border: 2px solid var(--text-primary);
 }
+
+/* Exempt List */
+.exempt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.exempt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-panel);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  padding: 6px 10px 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.exempt-chip button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 50%;
+  transition: color var(--transition), background var(--transition);
+}
+
+.exempt-chip button:hover {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.15);
+}

@@ -234,11 +234,16 @@ function setupLLMStatusPolling() {
             isDownloadingSession = false; // Reset for next load session
             updateLLMStatus();
         } else if (message.type === 'SCAN_PROGRESS') {
-            const pageStatusEl = document.getElementById('page-status');
-            if (pageStatusEl) {
-                pageStatusEl.textContent = message.message;
-                pageStatusEl.className = 'status-value loading';
-            }
+            // Only show progress for the active tab
+            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+                if (tab && message.tabId === tab.id) {
+                    const pageStatusEl = document.getElementById('page-status');
+                    if (pageStatusEl) {
+                        pageStatusEl.textContent = message.message;
+                        pageStatusEl.className = 'status-value loading';
+                    }
+                }
+            });
         } else if (message.type === 'SCAN_COMPLETE') {
             // Get current active tab to ensure result is for this page
             chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
@@ -264,6 +269,17 @@ async function fetchInitialScanResult() {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab || !tab.url.startsWith('http')) return;
+
+        // Check if a scan is currently in progress for this tab
+        const scanStatus = await chrome.runtime.sendMessage({ type: 'GET_SCAN_STATUS' });
+        if (scanStatus && scanStatus.scanning) {
+            const pageStatusEl = document.getElementById('page-status');
+            if (pageStatusEl) {
+                pageStatusEl.textContent = scanStatus.message || 'Taranıyor...';
+                pageStatusEl.className = 'status-value loading';
+            }
+            return; // Result will arrive via SCAN_COMPLETE listener
+        }
 
         console.log('[Ghoti Popup] Requesting initial scan result from tab:', tab.id);
         chrome.tabs.sendMessage(tab.id, { type: 'GET_SCAN_RESULT' }, (response) => {
@@ -303,8 +319,10 @@ async function updateLLMStatus() {
             const modelEl = document.getElementById('model-name');
             const progressEl = document.getElementById('load-progress');
 
-            // Update status with color coding
-            statusEl.textContent = formatStatus(response.status);
+            // Update status with color coding — respect sticky download session
+            statusEl.textContent = (response.status === 'loading' && isDownloadingSession)
+                ? 'İndiriliyor...'
+                : formatStatus(response.status);
             statusEl.className = 'status-value ' + response.status;
 
             // Update model name (truncate if too long)
