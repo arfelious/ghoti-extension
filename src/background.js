@@ -553,7 +553,13 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         });
 
         if (step1Result.error) throw new Error("Reasoning step failed: " + step1Result.error);
-        const reasoning = step1Result.content || "No reasoning generated.";
+        let reasoning = step1Result.content || "No reasoning generated.";
+
+        // Strip <think>...</think> blocks (Qwen 3 chain-of-thought)
+        // These are internal reasoning tokens that shouldn't be passed to Step 2
+        reasoning = reasoning.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').trim();
+        if (!reasoning) reasoning = "No reasoning generated.";
+
         console.log(`[Ghoti LLM] Step 1 complete. Reasoning length: ${reasoning.length}`);
 
         // === STEP 2: GENERATE SCORE ===
@@ -575,9 +581,30 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         const genTime = ((performance.now() - genStartTime) / 1000).toFixed(2);
         console.log(`[Ghoti LLM] Chain complete in ${genTime}s`);
 
+        // Fallback: derive score from Step 1's own conclusion when Step 2 fails
+        const fallbackToStep1 = (reason) => {
+            const tail = reasoning.slice(-300).toUpperCase();
+            const mentionsPhishing = tail.includes('PHISHING') && !tail.includes('NOT PHISHING');
+            const mentionsSafe = tail.includes('NOT PHISHING') || (tail.includes('SAFE') && !tail.includes('NOT SAFE'));
+
+            if (mentionsPhishing && !mentionsSafe) {
+                const score = verdictToScore('PHISHING', 4, reasoning);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): concluded PHISHING → ${score}%`);
+                return score;
+            } else if (mentionsSafe && !mentionsPhishing) {
+                const score = verdictToScore('SAFE', 4, reasoning);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): concluded SAFE → ${score}%`);
+                return score;
+            } else {
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): ambiguous conclusion → 12.5%`);
+                return 12.5;
+            }
+        };
+
         let confidence = 0;
         try {
             let jsonStr = step2Result.content.trim();
+            console.log(`[Ghoti LLM] Step 2 raw output:`, jsonStr);
             // Try to extract from markdown blocks first
             if (jsonStr.includes('```')) {
                 const matches = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -588,8 +615,15 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 const analysis = JSON.parse(jsonStr);
                 if (analysis.verdict !== undefined && analysis.severity !== undefined) {
                     confidence = verdictToScore(analysis.verdict, analysis.severity, reasoning);
+                } else if (analysis.phishingRisk !== undefined) {
+                    confidence = analysis.phishingRisk;
+                } else if (analysis.confidence !== undefined) {
+                    confidence = analysis.confidence;
+                } else if (analysis.score !== undefined) {
+                    confidence = analysis.score;
                 } else {
-                    confidence = analysis.phishingRisk !== undefined ? analysis.phishingRisk : (analysis.confidence !== undefined ? analysis.confidence : analysis.score !== undefined ? analysis.score : 0);
+                    // Valid JSON but no useful fields (e.g. {})
+                    confidence = fallbackToStep1('empty JSON');
                 }
             } catch (jsonErr) {
                 // Fallback 1: Regex for properties
@@ -619,8 +653,8 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 }
             }
         } catch (e) {
-            console.error("[Ghoti LLM] All score extraction methods failed:", e);
-            confidence = 0; // Default to safe if we truly can't parse anything
+            console.warn("[Ghoti LLM] Step 2 parsing failed completely:", e.message);
+            confidence = fallbackToStep1('parse failure');
         }
 
         // Derive isPhishing from confidence vs localThreshold
