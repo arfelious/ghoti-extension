@@ -70,6 +70,15 @@
         <input type="range" id="slider2" min="0" max="100" value="60">
       </div>
 
+      <!-- Results summary -->
+      <div id="results-summary" class="results-summary clickable" style="display: none;" title="Tıkla ve Detayları Gör">
+        <div class="risk-summary-header">
+          <span id="risk-count-display"></span>
+          <span class="click-tip">Tıkla ve Detayları Gör</span>
+        </div>
+        <div id="risk-details-list" class="risk-details-list" style="display: none;"></div>
+      </div>
+
       <!-- Quick action buttons (visible when left expanded, bottom collapsed) -->
       <div class="quick-actions">
         <button id="btn-report-quick" class="action-btn">Bildir</button>
@@ -83,7 +92,8 @@
       <div class="checkbox-section">
         <label><input type="checkbox" id="checkbox1"> Şüpheli bulunursa oran gösterilsin</label>
         <label><input type="checkbox" id="checkbox2"> Güven oranı her zaman gösterilsin</label>
-        <label><input type="checkbox" id="checkbox-block-combined"> Tarama ve phishing tespitinde bilgi girilmesini engelle</label>
+        <label><input type="checkbox" id="checkbox-block-combined"> Tarama süreci ve phishing tespitinde bilgi
+          girilmesini engelle</label>
         <label><input type="checkbox" id="checkbox4"> Taranan sayfalar önbelleğe alınsın</label>
         <label><input type="checkbox" id="checkbox5" checked> Tarama için sayfa içeriği de gönderilsin</label>
         <label><input type="checkbox" id="checkbox6" checked> Yerel analiz bitene kadar sadece alan adını

@@ -405,6 +405,10 @@ export function createLLMHandler(options = {}) {
                     await initEngine(message.modelId);
                     return { success: true, modelId: currentModelId };
 
+                case LLM_MESSAGE_TYPES.UNLOAD_MODEL:
+                    await unloadEngine();
+                    return { success: true };
+
                 default:
                     return { error: `Unknown message type: ${message.type}` };
             }

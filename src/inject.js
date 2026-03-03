@@ -233,6 +233,12 @@ async function analyzePage(scanId = null) {
 
   if (settings.blockUntilScanned) {
     blockAllInputs();
+    // Show immediate "Analysing..." toolbar with blocking message
+    injectToolbar(undefined, scanId);
+    const tb = document.getElementById('ghoti-toolbar');
+    if (tb) {
+      tb.textContent = 'Girişler güvenlik için engellendi. Analiz ediliyor...';
+    }
   }
 
   const THRESHOLD = settings.globalThreshold;
@@ -359,7 +365,15 @@ async function analyzePage(scanId = null) {
       } else {
         console.log('[Ghoti] Site is safe, not showing toolbar');
         // Un-inject warning if it was shown previously (e.g. from early WHOIS prediction)
-        removeToolbar();
+        // BUT: Keep it if it was a "known phishing" alert from the global DB and it's NOT a compare/forced scan
+        const tb = document.getElementById('ghoti-toolbar');
+        const isKnownPhishing = response.success && response.isKnownPhishing;
+
+        if (isKnownPhishing && tb && tb.textContent.includes('daha önceki analizlerde')) {
+          console.log('[Ghoti] Keeping "known phishing" toolbar despite safe scan result.');
+        } else {
+          removeToolbar();
+        }
       }
     }
   });

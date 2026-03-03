@@ -178,6 +178,25 @@ body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
   background: var(--accent-hover);
 }
 
+.quick-actions .action-.btn-danger {
+  background-color: var(--danger-color);
+  color: white;
+}
+
+.btn-danger:hover {
+  background-color: var(--danger-color-hover);
+}
+
+.btn-success {
+  background-color: var(--safe-color);
+  color: white;
+  cursor: default;
+}
+
+.btn-success:hover {
+  background-color: var(--safe-color);
+}
+
 .progress-bar {
   height: 4px;
   background: var(--bg-secondary);
@@ -282,6 +301,137 @@ body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.results-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0;
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius);
+  border-left: 3px solid var(--warning);
+  font-size: 12px;
+  color: var(--text-primary);
+  animation: slideIn 0.3s ease;
+  overflow: hidden;
+}
+
+/* Header part that is always visible when results are shown */
+.risk-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.results-summary.clickable {
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.results-summary.clickable:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.results-summary.phishing {
+  border-left-color: var(--danger);
+  background: rgba(248, 113, 113, 0.05);
+}
+
+.risk-count-display {
+  font-weight: 700;
+}
+
+.click-tip {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: normal;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.click-tip::after {
+  content: '▼';
+  font-size: 8px;
+  transition: transform var(--transition);
+}
+
+.results-summary.expanded .click-tip::after {
+  transform: rotate(180deg);
+}
+
+.risk-details-list {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 0 12px 12px 12px;
+  margin-top: 4px;
+}
+
+/* Custom scrollbar to indicate scrollability */
+.risk-details-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.risk-details-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.risk-details-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.risk-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--border-radius);
+  border-left: 2px solid var(--warning);
+  font-size: 11px;
+  line-height: 1.4;
+  transition: transform 0.2s ease;
+}
+
+.risk-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  transform: translateX(2px);
+}
+
+.risk-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  margin-top: -1px;
+}
+
+.risk-text {
+  flex: 1;
+}
+
+.risk-item.high {
+  border-left-color: var(--danger);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .slider-group {

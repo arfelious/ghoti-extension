@@ -144,6 +144,14 @@ export class LLMAdapter {
     }
 
     /**
+     * Unload the current model from memory
+     */
+    async unloadModel() {
+        await this._send(LLM_MESSAGE_TYPES.UNLOAD_MODEL);
+        this._setStatus(LLM_STATUS.UNINITIALIZED);
+    }
+
+    /**
      * Get current status
      * @returns {Promise<Object>}
      */

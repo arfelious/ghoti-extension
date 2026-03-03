@@ -32,11 +32,20 @@ let SESSION_NONCE = null;
 // Track last scanned URL per tab to prevent duplicate scans
 const lastScannedUrl = new Map();
 
-// Track tabs that need scanning but wasn't ready to receive START_SCAN
+// TrackTabs that need scanning but wasn't ready to receive START_SCAN
 const pendingScans = new Map();
 
-// Track per-tab scan status so popup can query it on open
-const tabScanStatus = new Map();
+// Helper to manage per-tab scan status in session storage (persists through SW suspension)
+async function getTabScanStatus(tabId) {
+    const key = `scan_status_${tabId}`;
+    const data = await chrome.storage.session.get(key);
+    return data[key];
+}
+
+async function setTabScanStatus(tabId, statusObj) {
+    const key = `scan_status_${tabId}`;
+    await chrome.storage.session.set({ [key]: statusObj });
+}
 
 // Cache scan results for cacheScannedPages setting
 const pageCache = new Map(); // url -> { timestamp, result }
@@ -47,12 +56,59 @@ function generateScanId() {
 }
 
 /**
+ * Update the extension icon badge
+ */
+function updateBadge(tabId, count, isScanning) {
+    if (isScanning) {
+        chrome.action.setBadgeText({ tabId, text: "..." });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: "#6B7280" }); // Grey
+        return;
+    }
+
+    if (count > 0) {
+        chrome.action.setBadgeText({ tabId, text: count.toString() });
+        // Set color based on risk level if we have a threshold, but for now red/orange
+        chrome.action.setBadgeBackgroundColor({ tabId, color: count > 3 ? "#F87171" : "#FBBF24" }); // Red or Orange
+    } else {
+        chrome.action.setBadgeText({ tabId, text: "" });
+    }
+}
+
+/**
  * Broadcast scan progress to both the content script (tab) and popup/extension views.
  */
-function broadcastScanProgress(tabId, status, message) {
-    tabScanStatus.set(tabId, { status, message, timestamp: Date.now() });
+async function broadcastScanProgress(tabId, status, message) {
+    const statusObj = { status, message, timestamp: Date.now() };
+    await setTabScanStatus(tabId, statusObj);
+    updateBadge(tabId, null, true);
     chrome.tabs.sendMessage(tabId, { type: 'SCAN_PROGRESS', status, message }).catch(() => { });
     chrome.runtime.sendMessage({ type: 'SCAN_PROGRESS', tabId, status, message }).catch(() => { });
+}
+
+/**
+ * Finalize a scan result and broadcast completion.
+ */
+async function finalizeAndReturn(tabId, result, count) {
+    // Signal completion to tab and popup
+    const statusObj = {
+        status: 'complete',
+        riskCount: count,
+        result: result, // Store full result for popup sync
+        timestamp: Date.now()
+    };
+    await setTabScanStatus(tabId, statusObj);
+
+    updateBadge(tabId, count, false);
+
+    chrome.tabs.sendMessage(tabId, { type: 'SCAN_COMPLETE', result }).catch(() => { });
+    chrome.runtime.sendMessage({
+        type: 'SCAN_COMPLETE',
+        tabId,
+        result,
+        riskCount: count
+    }).catch(() => { });
+
+    return result;
 }
 
 async function initSessionNonce() {
@@ -252,7 +308,10 @@ async function uploadResultToServer(result, settings) {
                 'Content-Type': 'application/json',
                 'X-Ghoti-Nonce': SESSION_NONCE || ''
             },
-            body: JSON.stringify(result)
+            body: JSON.stringify({
+                ...result,
+                clientId: SESSION_NONCE
+            })
         });
 
         if (response.ok) {
@@ -454,9 +513,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.type === 'GET_SCAN_STATUS') {
-        chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-            if (tab && tabScanStatus.has(tab.id)) {
-                sendResponse({ scanning: true, ...tabScanStatus.get(tab.id) });
+        chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
+            if (tab) {
+                const statusData = await getTabScanStatus(tab.id);
+                if (statusData) {
+                    sendResponse({
+                        scanning: statusData.status !== 'complete',
+                        ...statusData
+                    });
+                } else {
+                    sendResponse({ scanning: false });
+                }
             } else {
                 sendResponse({ scanning: false });
             }
@@ -548,7 +615,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             message: reasoningPrompt,
             options: {
                 temperature: 0.2, // Slightly higher for reasoning
-                max_tokens: 512
+                max_tokens: 2048 // Increased to prevent truncation of thinking/reasoning
             }
         });
 
@@ -557,7 +624,18 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         // Strip <think>...</think> blocks (Qwen 3 chain-of-thought)
         // These are internal reasoning tokens that shouldn't be passed to Step 2
-        reasoning = reasoning.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').trim();
+        // However, some small models put their entire output in the think block.
+        const thinkMatch = reasoning.match(/<think>([\s\S]*?)<\/think>/i);
+        let strippedReasoning = reasoning.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').trim();
+
+        if (!strippedReasoning && thinkMatch && thinkMatch[1].trim()) {
+            // Model outputted nothing but a think block. We must use its internal thoughts as the reasoning.
+            reasoning = "(Düşünce Zinciri) " + thinkMatch[1].trim();
+            console.log(`[Ghoti LLM] Model only outputted <think> block. Falling back to thinking as reasoning.`);
+        } else if (strippedReasoning) {
+            reasoning = strippedReasoning;
+        }
+
         if (!reasoning) reasoning = "No reasoning generated.";
 
         console.log(`[Ghoti LLM] Step 1 complete. Reasoning length: ${reasoning.length}`);
@@ -571,8 +649,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             message: scoringPrompt,
             options: {
                 temperature: 0.15, // Low temperature for consistent scoring
-                max_tokens: 128,
-                response_format: { type: "json_object" }
+                max_tokens: 512 // Increased buffer
             }
         });
 
@@ -582,21 +659,37 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         console.log(`[Ghoti LLM] Chain complete in ${genTime}s`);
 
         // Fallback: derive score from Step 1's own conclusion when Step 2 fails
+        // Fallback: derive score from Step 1's own analysis when Step 2 fails
         const fallbackToStep1 = (reason) => {
-            const tail = reasoning.slice(-300).toUpperCase();
-            const mentionsPhishing = tail.includes('PHISHING') && !tail.includes('NOT PHISHING');
-            const mentionsSafe = tail.includes('NOT PHISHING') || (tail.includes('SAFE') && !tail.includes('NOT SAFE'));
+            const fullText = reasoning.toUpperCase();
+            const riskIndicators = extractedData?.riskIndicators || [];
 
-            if (mentionsPhishing && !mentionsSafe) {
-                const score = verdictToScore('PHISHING', 4, reasoning);
-                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): concluded PHISHING → ${score}%`);
+            // Check if the analysis acknowledges severe risks
+            const phishingKeywords = [
+                'RISK INDICATOR', 'IMPERSONATION', 'DECEPTIVE', 'ALMOST ALWAYS PHISHING',
+                'HIGH RISK', 'HIGH-RISK', 'CREDENTIAL THEFT', 'MALICIOUS',
+                'SUSPICIOUS TLD', 'PHISHING ATTEMPT', 'FAKE APPLICATION', '🚨'
+            ];
+
+            // Check if analysis explicitly concludes it's safe without risks
+            const safeKeywords = [
+                'LEGITIMATE', 'NO DECEPTIVE PATTERNS', 'NO SUSPICIOUS',
+                'NORMAL AND EXPECTED', 'HARMLESS'
+            ];
+
+            const phishingHits = phishingKeywords.filter(k => fullText.includes(k)).length;
+            const safeHits = safeKeywords.filter(k => fullText.includes(k)).length;
+
+            if (phishingHits > 0 && phishingHits >= safeHits) {
+                const score = verdictToScore('PHISHING', 4, reasoning, riskIndicators);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): detected ${phishingHits} risk keywords in analysis → ${score}%`);
                 return score;
-            } else if (mentionsSafe && !mentionsPhishing) {
-                const score = verdictToScore('SAFE', 4, reasoning);
-                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): concluded SAFE → ${score}%`);
+            } else if (safeHits > 0 && safeHits > phishingHits) {
+                const score = verdictToScore('SAFE', 4);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): detected mostly safe keywords → ${score}%`);
                 return score;
             } else {
-                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): ambiguous conclusion → 12.5%`);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): ambiguous analysis → 12.5%`);
                 return 12.5;
             }
         };
@@ -613,8 +706,9 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
             try {
                 const analysis = JSON.parse(jsonStr);
+                const riskIndicators = extractedData?.riskIndicators || [];
                 if (analysis.verdict !== undefined && analysis.severity !== undefined) {
-                    confidence = verdictToScore(analysis.verdict, analysis.severity, reasoning);
+                    confidence = verdictToScore(analysis.verdict, analysis.severity, reasoning, riskIndicators);
                 } else if (analysis.phishingRisk !== undefined) {
                     confidence = analysis.phishingRisk;
                 } else if (analysis.confidence !== undefined) {
@@ -626,7 +720,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                     confidence = fallbackToStep1('empty JSON');
                 }
             } catch (jsonErr) {
-                // Fallback 1: Regex for properties
+                const riskIndicators = extractedData?.riskIndicators || [];
                 const verdictMatch = jsonStr.match(/"?verdict"?\s*:\s*"?([A-Za-z]+)"?/i);
                 const severityMatch = jsonStr.match(/"?severity"?\s*:\s*(\d+)/i);
 
@@ -635,7 +729,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 const scoreMatch = jsonStr.match(/"?score"?\s*:\s*(\d+)/i);
 
                 if (verdictMatch && severityMatch) {
-                    confidence = verdictToScore(verdictMatch[1], parseInt(severityMatch[1]), reasoning);
+                    confidence = verdictToScore(verdictMatch[1], parseInt(severityMatch[1]), reasoning, riskIndicators);
                 } else if (riskMatch) {
                     confidence = parseInt(riskMatch[1]);
                 } else if (confMatch) {
@@ -643,13 +737,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 } else if (scoreMatch) {
                     confidence = parseInt(scoreMatch[1]);
                 } else {
-                    // Fallback 2: Any number in a response that looks like just a number or "Score: 10"
-                    const simpleNumberMatch = jsonStr.match(/(\d+)/);
-                    if (simpleNumberMatch) {
-                        confidence = parseInt(simpleNumberMatch[1]);
-                    } else {
-                        throw jsonErr;
-                    }
+                    throw jsonErr;
                 }
             }
         } catch (e) {
@@ -666,6 +754,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             isPhishing,
             confidence,
             reasoning,
+            riskFactors: extractedData?.riskIndicators || [],
             raw: step1Result.content + "\n\nSCORE_JSON: " + step2Result.content
         };
 
@@ -719,7 +808,7 @@ async function handlePageAnalysis(data, tabId) {
         if (Date.now() - cached.timestamp < 3600000) { // 1 hour
             console.log('[Ghoti Background] Returning cached result for:', urlObj.href);
             // Broadcast completion
-            tabScanStatus.delete(tabId);
+            await setTabScanStatus(tabId, null);
             chrome.runtime.sendMessage({
                 type: 'SCAN_COMPLETE',
                 tabId: tabId,
@@ -732,15 +821,20 @@ async function handlePageAnalysis(data, tabId) {
     }
 
     // Helper to finalize, cache, broadcast, and return
-    const finalizeAndReturn = (result) => {
+    const finalizeAndReturn = async (result) => {
         if (settings.cacheScannedPages && result.success && result.localResult?.source !== 'error') {
             pageCache.set(urlObj.href, { timestamp: Date.now(), result });
         }
-        tabScanStatus.delete(tabId);
+
+        const riskCount = (result.queryResult?.riskFactors?.length) || (extractedData?.riskIndicators?.length) || 0;
+        await setTabScanStatus(tabId, { status: 'complete', result, riskCount, timestamp: Date.now() });
+        updateBadge(tabId, riskCount, false);
+
         chrome.runtime.sendMessage({
             type: 'SCAN_COMPLETE',
             tabId: tabId,
-            result: result
+            result: result,
+            riskCount: riskCount
         }).catch(() => { });
         return result;
     };
@@ -795,6 +889,7 @@ async function handlePageAnalysis(data, tabId) {
     // In compareMode, always run both
     const shouldUseRemote = settings.compareMode ||
         localSuspicion > settings.localThreshold ||
+        isKnownPhishing || // Force remote analysis if global DB flagged it but local thinks it's safe
         localAnalysis.error;
 
     if (!shouldUseRemote) {
@@ -831,12 +926,14 @@ async function handlePageAnalysis(data, tabId) {
 
         const result = {
             success: true,
+            isKnownPhishing: isKnownPhishing, // Pass the known status from DB
             whoisResult: null,
             queryResult: null, // No remote analysis for trusted sites
             localResult: {
                 finalRating: localSuspicion,
                 response: localAnalysis.reasoning || "Analyzed locally, deemed safe.",
                 source: "local",
+                riskFactors: localAnalysis.riskFactors || [], // Ensure risks are passed
                 error: null
             }
         };
@@ -887,6 +984,7 @@ async function handlePageAnalysis(data, tabId) {
                     const payload = {
                         version: "0.1.0",
                         url: url,
+                        clientId: SESSION_NONCE,
                         extractedData: extractedData,
                     };
 
@@ -936,6 +1034,11 @@ async function handlePageAnalysis(data, tabId) {
         // Wait for query to complete (we already have whoisResult)
         const queryResult = await queryPromise;
 
+        // Merge extracted risk indicators with server reported ones to fix popup visibility empty array bug
+        if (extractedData?.riskIndicators && extractedData.riskIndicators.length > 0) {
+            queryResult.riskFactors = [...new Set([...(queryResult.riskFactors || []), ...extractedData.riskIndicators])];
+        }
+
         console.log('[Ghoti Background] WHOIS result:', whoisResult);
         console.log('[Ghoti Background] Query result:', queryResult);
 
@@ -957,6 +1060,7 @@ async function handlePageAnalysis(data, tabId) {
         if (settings.compareMode) {
             const result = {
                 success: true,
+                isKnownPhishing: isKnownPhishing,
                 scanId: data.scanId, // Echo back the scanId
                 whoisResult,
                 queryResult: { ...queryResult, source: "remote" },
@@ -964,6 +1068,7 @@ async function handlePageAnalysis(data, tabId) {
                     finalRating: localSuspicion,
                     response: localAnalysis.reasoning || "Local analysis result",
                     source: "local",
+                    riskFactors: localAnalysis.riskFactors || [],
                     error: localAnalysis.error || null
                 }
             };
@@ -973,12 +1078,14 @@ async function handlePageAnalysis(data, tabId) {
 
         const result = {
             success: true,
+            isKnownPhishing: isKnownPhishing,
             whoisResult,
             queryResult: { ...queryResult, source: "remote" },
             localResult: {
                 finalRating: localSuspicion,
                 response: localAnalysis.reasoning || "Local analysis result",
                 source: "local",
+                riskFactors: localAnalysis.riskFactors || [],
                 error: localAnalysis.error || null
             }
         };
@@ -1164,3 +1271,30 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Start heartbeat
 setupHeartbeat();
+
+// Tab listeners to persist badge
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+    const status = await getTabScanStatus(tabId);
+    if (status) {
+        if (status.status === 'complete') {
+            updateBadge(tabId, status.riskCount, false);
+        } else {
+            updateBadge(tabId, null, true);
+        }
+    } else {
+        chrome.action.setBadgeText({ tabId, text: "" });
+    }
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'loading') {
+        const url = tab.url;
+        const lastScanned = lastScannedUrl.get(tabId);
+
+        // If it's a new URL or a hard reload, clear the badge
+        if (url !== lastScanned) {
+            await setTabScanStatus(tabId, null);
+            chrome.action.setBadgeText({ tabId, text: "" });
+        }
+    }
+});

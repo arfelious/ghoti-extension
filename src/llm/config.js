@@ -28,6 +28,7 @@ export const LLM_MESSAGE_TYPES = {
     SELECT_MODEL: 'LLM_SELECT_MODEL',
     GET_SELECTED_MODEL: 'LLM_GET_SELECTED_MODEL',
     RELOAD_MODEL: 'LLM_RELOAD_MODEL',
+    UNLOAD_MODEL: 'LLM_UNLOAD_MODEL',
 };
 
 // Default model configuration
@@ -41,19 +42,14 @@ export const DEFAULT_CONFIG = {
     // modelId: 'gemma-2b-it-q4f16_1-MLC',
 };
 
-// Engine initialization options
-export const ENGINE_OPTIONS = {
-    // Optional: Override chat options
-    chatOpts: {
-        // temperature: 0.7,
-        // max_tokens: 2048,
-    },
-};
-
-// Default generation options for phishing analysis
-export const GENERATION_DEFAULTS = {
-    max_tokens: 512,  // Limit output to ~512 tokens (plenty for JSON response)
-    temperature: 0.1, // Low temperature for consistent output
+// LLM generation options
+export const LLM_OPTIONS = {
+    temperature: 0.1, // Keep very low to ensure strict JSON adherence
+    repetition_penalty: 1.1,
+    // Add these for smaller models to ensure they stop generating after JSON is complete
+    stop: ["}", "}\n", "```", "```json", "<|endoftext|>", "<|im_end|>"],
+    max_tokens: 2048,  // Limit output to ~2048 tokens (plenty for JSON response)
+    response_format: { type: "json_object" }
 };
 
 // Status states

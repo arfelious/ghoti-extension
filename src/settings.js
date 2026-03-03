@@ -253,6 +253,8 @@ function setupEventListeners() {
 
     // Model selection
     document.getElementById('loadModelBtn').addEventListener('click', handleLoadModel);
+    const unloadBtn = document.getElementById('unloadModelBtn');
+    if (unloadBtn) unloadBtn.addEventListener('click', handleUnloadModel);
 
     // Tab switching (Main)
     document.querySelectorAll('.settings-tabs .tab-btn').forEach(btn => {
@@ -329,6 +331,13 @@ function setupEventListeners() {
         if (addPresetBtn) {
             const modelId = addPresetBtn.dataset.modelId;
             window.addPresetModel(modelId);
+        }
+
+        // Handle preset model select
+        const selectPresetBtn = e.target.closest('[data-action="select-preset"]');
+        if (selectPresetBtn) {
+            const modelId = selectPresetBtn.dataset.modelId;
+            window.selectPresetModel(modelId);
         }
 
         // Handle custom model remove
@@ -527,6 +536,10 @@ async function loadAvailableModels() {
         const presetGroup = document.createElement('optgroup');
         presetGroup.label = 'Hazır Modeller';
         presets.forEach(model => {
+            // Hide f16 models if shader-f16 is not supported
+            if (model.model_id.toLowerCase().includes('f16') && !hasShaderF16) {
+                return;
+            }
             const option = document.createElement('option');
             option.value = model.model_id;
             option.textContent = `${model.model_id} (${model.vram_required_MB}MB)`;
@@ -536,7 +549,7 @@ async function loadAvailableModels() {
         modelSelect.appendChild(presetGroup);
 
         // Render preset models list
-        renderPresetModels(presetsList, presets, custom, hasShaderF16);
+        renderPresetModels(presetsList, presets, custom, hasShaderF16, selectedModel);
 
         // Filter custom models for display (exclude presets)
         const displayCustom = custom.filter(m => !presets.some(p => p.model_id === m.model_id));
@@ -550,20 +563,41 @@ async function loadAvailableModels() {
     }
 }
 
-function renderPresetModels(container, presets, customModels, hasShaderF16) {
+function renderPresetModels(container, presets, customModels, hasShaderF16, selectedModel) {
     const customIds = new Set(customModels.map(m => m.model_id));
 
-    container.innerHTML = presets.map(model => {
-        const isInstalled = customIds.has(model.model_id);
-        const needsF16 = model.model_id.toLowerCase().includes('f16');
-        const showWarning = needsF16 && !hasShaderF16;
+    // Filter out f16 models if not supported
+    const visiblePresets = presets.filter(model => {
+        return !(model.model_id.toLowerCase().includes('f16') && !hasShaderF16);
+    });
+
+    container.innerHTML = visiblePresets.map(model => {
+        const isSelected = model.model_id === selectedModel;
+        const isInstalled = customIds.has(model.model_id) || isSelected;
+
+        // Define button properties based on state
+        let btnClass = 'btn-primary';
+        let btnAction = 'add-preset';
+        let btnText = 'Ekle';
+        let disabled = false;
+
+        if (isSelected) {
+            btnClass = 'btn-success'; // Or whatever class represents 'active/selected'
+            btnAction = ''; // No action needed since it's already selected
+            btnText = 'Seçilen';
+            disabled = true;
+        } else if (isInstalled) {
+            btnClass = 'btn-secondary';
+            btnAction = 'select-preset';
+            btnText = 'Seç';
+            disabled = false; // Make it clickable to select!
+        }
 
         return `
             <div class="model-card ${isInstalled ? 'installed' : ''}">
                 <div class="model-info">
                     <div class="model-name">
                         ${model.model_id}
-                        ${showWarning ? `<span class="warning-icon" data-tooltip="Tarayıcınız veya donanımınız 16-bit (f16) shader desteğine sahip değil. Bu model çalışmayabilir.">⚠️</span>` : ''}
                     </div>
                     <div class="model-meta">
                         ${model.vram_required_MB}MB VRAM
@@ -571,12 +605,12 @@ function renderPresetModels(container, presets, customModels, hasShaderF16) {
                     </div>
                 </div>
                 <button 
-                    class="btn ${isInstalled ? 'btn-secondary' : 'btn-primary'}"
-                    data-action="add-preset"
+                    class="btn ${btnClass}"
+                    data-action="${btnAction}"
                     data-model-id="${model.model_id}"
-                    ${isInstalled ? 'disabled' : ''}
+                    ${disabled ? 'disabled' : ''}
                 >
-                    ${isInstalled ? 'Yüklendi' : 'Ekle'}
+                    ${btnText}
                 </button>
             </div>
         `;
@@ -619,7 +653,27 @@ window.addPresetModel = async function (modelId) {
         await llm.addCustomModel({ ...preset });
         showStatus(`${modelId} eklendi`);
         await loadAvailableModels();
+
+        // Auto-select after download for convenience? (Optional, maybe just let them click it)
+        // await llm.selectModel(modelId);
+        // await llm.reloadModel(modelId);
     } catch (e) {
+        showStatus(`Hata: ${e.message}`, 'error');
+    }
+};
+
+window.selectPresetModel = async function (modelId) {
+    try {
+        showProgress();
+        await llm.selectModel(modelId);
+        await llm.reloadModel(modelId);
+        showStatus(`${modelId} seçildi`);
+        await loadAvailableModels();
+        // Also update the dropdown to match
+        const select = document.getElementById('modelSelect');
+        if (select) select.value = modelId;
+    } catch (e) {
+        hideProgress();
         showStatus(`Hata: ${e.message}`, 'error');
     }
 };
@@ -652,6 +706,17 @@ async function handleLoadModel() {
     } catch (e) {
         hideProgress();
         showStatus(`Model yüklenirken hata: ${e.message}`, 'error');
+    }
+}
+
+async function handleUnloadModel() {
+    try {
+        await llm.unloadModel();
+        showStatus('Model bellekten çıkarıldı');
+        await loadAvailableModels();
+        await loadModelInfo();
+    } catch (e) {
+        showStatus(`Model çıkarılırken hata: ${e.message}`, 'error');
     }
 }
 

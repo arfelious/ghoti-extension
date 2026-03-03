@@ -135,6 +135,12 @@ function setupEventListeners() {
 
     // Output toggle
     document.getElementById('toggle-output-source').addEventListener('click', toggleOutputSource);
+
+    // Risk summary clickable
+    const riskSummary = document.getElementById('results-summary');
+    if (riskSummary) {
+        riskSummary.addEventListener('click', toggleRiskDetails);
+    }
 }
 
 /**
@@ -250,11 +256,30 @@ function setupLLMStatusPolling() {
                 if (tab && message.tabId === tab.id) {
                     console.log('[Ghoti Popup] Scan complete received for current tab');
                     const domain = new URL(tab.url).hostname;
+
+                    // Update local state and output
+                    currentScanResult = message.result;
                     updateModelOutput(message.result, domain);
+
                     const pageStatusEl = document.getElementById('page-status');
                     if (pageStatusEl) {
                         pageStatusEl.textContent = 'Tamamlandı';
                         pageStatusEl.className = 'status-value ready';
+                    }
+
+                    // Show risk factor summary and details
+                    const riskSummaryEl = document.getElementById('results-summary');
+                    const riskCountEl = document.getElementById('risk-count-display');
+                    if (riskSummaryEl && riskCountEl) {
+                        const count = message.riskCount || 0;
+                        riskCountEl.textContent = `${count} Oltalama Riski Tespit Edildi`;
+                        riskSummaryEl.style.display = count > 0 ? 'flex' : 'none';
+                        riskSummaryEl.className = count > 3 ? 'results-summary phishing' : 'results-summary';
+
+                        // Render full details
+                        const riskFactors = message.result?.queryResult?.riskFactors ||
+                            message.result?.localResult?.riskFactors || [];
+                        renderRiskDetails(riskFactors);
                     }
                 }
             });
@@ -272,13 +297,44 @@ async function fetchInitialScanResult() {
 
         // Check if a scan is currently in progress for this tab
         const scanStatus = await chrome.runtime.sendMessage({ type: 'GET_SCAN_STATUS' });
-        if (scanStatus && scanStatus.scanning) {
-            const pageStatusEl = document.getElementById('page-status');
-            if (pageStatusEl) {
-                pageStatusEl.textContent = scanStatus.message || 'Taranıyor...';
-                pageStatusEl.className = 'status-value loading';
+
+        // Even if not scanning, the background might have the result stored from a previous scan in this session
+        if (scanStatus) {
+            if (scanStatus.scanning) {
+                const pageStatusEl = document.getElementById('page-status');
+                if (pageStatusEl) {
+                    pageStatusEl.textContent = scanStatus.message || 'Taranıyor...';
+                    pageStatusEl.className = 'status-value loading';
+                }
+                return; // Result will arrive via SCAN_COMPLETE listener
+            } else if (scanStatus.result) {
+                // Background has a result! Use it instead of asking tab (persistence fix)
+                console.log('[Ghoti Popup] Stored result found in background:', scanStatus.result);
+                const domain = new URL(tab.url).hostname;
+                updateModelOutput(scanStatus.result, domain);
+
+                const pageStatusEl = document.getElementById('page-status');
+                if (pageStatusEl) {
+                    pageStatusEl.textContent = 'Tamamlandı';
+                    pageStatusEl.className = 'status-value ready';
+                }
+
+                // Show risk factor summary
+                const riskSummaryEl = document.getElementById('results-summary');
+                const riskCountEl = document.getElementById('risk-count-display');
+                if (riskSummaryEl && riskCountEl) {
+                    const riskFactors = scanStatus.result.queryResult?.riskFactors ||
+                        scanStatus.result.localResult?.riskFactors || [];
+                    const count = riskFactors.length;
+
+                    riskCountEl.textContent = `${count} Oltalama Riski Tespit Edildi`;
+                    riskSummaryEl.style.display = count > 0 ? 'flex' : 'none';
+                    riskSummaryEl.className = count > 3 ? 'results-summary phishing' : 'results-summary';
+
+                    renderRiskDetails(riskFactors);
+                }
+                return;
             }
-            return; // Result will arrive via SCAN_COMPLETE listener
         }
 
         console.log('[Ghoti Popup] Requesting initial scan result from tab:', tab.id);
@@ -297,6 +353,22 @@ async function fetchInitialScanResult() {
                 if (pageStatusEl) {
                     pageStatusEl.textContent = 'Tamamlandı';
                     pageStatusEl.className = 'status-value ready';
+                }
+
+                // Show risk factor summary
+                const riskSummaryEl = document.getElementById('results-summary');
+                const riskCountEl = document.getElementById('risk-count-display');
+                if (riskSummaryEl && riskCountEl) {
+                    // Extract risk factors from result
+                    const riskFactors = response.result.queryResult?.riskFactors ||
+                        response.result.localResult?.riskFactors || [];
+                    const count = riskFactors.length;
+
+                    riskCountEl.textContent = `${count} Oltalama Riski Tespit Edildi`;
+                    riskSummaryEl.style.display = count > 0 ? 'flex' : 'none';
+                    riskSummaryEl.className = count > 3 ? 'results-summary phishing' : 'results-summary';
+
+                    renderRiskDetails(riskFactors);
                 }
             }
         });
@@ -505,5 +577,68 @@ function openSettings() {
         chrome.runtime.openOptionsPage();
     } else {
         window.open(chrome.runtime.getURL('settings.html'));
+    }
+}
+
+/**
+ * Render detailed risk factors in the popup
+ */
+function renderRiskDetails(riskFactors) {
+    const listEl = document.getElementById('risk-details-list');
+    if (!listEl) return;
+
+    listEl.innerHTML = '';
+    let hasHighRisk = false;
+    if (!riskFactors || riskFactors.length === 0) {
+        document.getElementById('results-summary').style.display = 'none';
+        return;
+    }
+
+    riskFactors.forEach(risk => {
+        const item = document.createElement('div');
+        const isHigh = risk.includes('🚨') || risk.includes('SENSITIVE PII') || risk.includes('FAKE') || risk.includes('IMPERSONATION') || risk.includes('CREDENTIAL');
+        if (isHigh) hasHighRisk = true;
+        item.className = isHigh ? 'risk-item high' : 'risk-item';
+
+        // Add icon
+        const icon = document.createElement('span');
+        icon.className = 'risk-icon';
+        icon.textContent = isHigh ? '🚨' : '⚠️';
+
+        const text = document.createElement('span');
+        text.className = 'risk-text';
+        text.textContent = risk;
+
+        item.appendChild(icon);
+        item.appendChild(text);
+        listEl.appendChild(item);
+    });
+
+    // Risk details are collapsed by default as requested
+    document.getElementById('results-summary').classList.remove('expanded');
+    document.getElementById('risk-details-list').style.display = 'none';
+    const tipEl = document.querySelector('.click-tip');
+    if (tipEl) tipEl.textContent = 'Tıkla ve Detayları Gör';
+
+}
+
+/**
+ * Toggle risk details visibility
+ */
+function toggleRiskDetails() {
+    const container = document.getElementById('results-summary');
+    const list = document.getElementById('risk-details-list');
+    const tip = container.querySelector('.click-tip');
+    if (!container || !list) return;
+
+    const isExpanded = container.classList.contains('expanded');
+    if (isExpanded) {
+        container.classList.remove('expanded');
+        list.style.display = 'none';
+        if (tip) tip.firstChild.textContent = 'Detayları Göster ';
+    } else {
+        container.classList.add('expanded');
+        list.style.display = 'flex';
+        if (tip) tip.firstChild.textContent = 'Detayları Gizle ';
     }
 }

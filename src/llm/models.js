@@ -11,8 +11,10 @@
  * - overrides: (optional) Chat config overrides like context_window_size
  */
 
-// Use browser API (Firefox) or chrome API
-const storage = typeof browser !== 'undefined' ? browser.storage : chrome.storage;
+// Use browser API (Firefox), chrome API, or mock for Node.js
+const storage = (typeof browser !== 'undefined' && browser.storage)
+    ? browser.storage
+    : ((typeof chrome !== 'undefined' && chrome.storage) ? chrome.storage : null);
 
 // Model library URL prefix from web-llm
 export const MODEL_LIB_URL_PREFIX = 'https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/';
@@ -42,10 +44,26 @@ export const PRESET_MODELS = [
         overrides: { context_window_size: 4096 },
     },
     {
+        model: 'https://huggingface.co/mlc-ai/Qwen3-0.6B-q4f32_1-MLC',
+        model_id: 'Qwen3-0.6B-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3-0.6B-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 1200, // Estimated
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
         model: 'https://huggingface.co/mlc-ai/Qwen3-1.7B-q4f16_1-MLC',
         model_id: 'Qwen3-1.7B-q4f16_1-MLC',
         model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3-1.7B-q4f16_1-ctx4k_cs1k-webgpu.wasm`,
         vram_required_MB: 1770,
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen3-1.7B-q4f32_1-MLC',
+        model_id: 'Qwen3-1.7B-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3-1.7B-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 2000, // Estimated
         low_resource_required: true,
         overrides: { context_window_size: 4096 },
     },
@@ -73,6 +91,14 @@ export const PRESET_MODELS = [
         low_resource_required: false,
         overrides: { context_window_size: 4096 },
     },
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen3-8B-q4f32_1-MLC',
+        model_id: 'Qwen3-8B-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3-8B-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 7100, // Estimated
+        low_resource_required: false,
+        overrides: { context_window_size: 4096 },
+    },
     // Llama 3.2 models
     {
         model: 'https://huggingface.co/mlc-ai/Llama-3.2-1B-Instruct-q4f16_1-MLC',
@@ -83,10 +109,26 @@ export const PRESET_MODELS = [
         overrides: { context_window_size: 4096 },
     },
     {
+        model: 'https://huggingface.co/mlc-ai/Llama-3.2-1B-Instruct-q4f32_1-MLC',
+        model_id: 'Llama-3.2-1B-Instruct-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Llama-3.2-1B-Instruct-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 1150, // Estimated
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
         model: 'https://huggingface.co/mlc-ai/Llama-3.2-3B-Instruct-q4f16_1-MLC',
         model_id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
         model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Llama-3.2-3B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm`,
         vram_required_MB: 2264,
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
+        model: 'https://huggingface.co/mlc-ai/Llama-3.2-3B-Instruct-q4f32_1-MLC',
+        model_id: 'Llama-3.2-3B-Instruct-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Llama-3.2-3B-Instruct-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 3000, // Estimated
         low_resource_required: true,
         overrides: { context_window_size: 4096 },
     },
@@ -99,22 +141,13 @@ export const PRESET_MODELS = [
         low_resource_required: true,
         overrides: { context_window_size: 4096 },
     },
-    // SmolLM2 models (very small, good for low-end devices)
     {
-        model: 'https://huggingface.co/mlc-ai/SmolLM2-360M-Instruct-q4f16_1-MLC',
-        model_id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
-        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/SmolLM2-360M-Instruct-q4f16_1-ctx2k_cs1k-webgpu.wasm`,
-        vram_required_MB: 390,
+        model: 'https://huggingface.co/mlc-ai/Phi-3.5-mini-instruct-q4f32_1-MLC',
+        model_id: 'Phi-3.5-mini-instruct-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Phi-3.5-mini-instruct-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 3600, // Estimated
         low_resource_required: true,
-        overrides: { context_window_size: 2048 },
-    },
-    {
-        model: 'https://huggingface.co/mlc-ai/SmolLM2-1.7B-Instruct-q4f16_1-MLC',
-        model_id: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC',
-        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/SmolLM2-1.7B-Instruct-q4f16_1-ctx2k_cs1k-webgpu.wasm`,
-        vram_required_MB: 1320,
-        low_resource_required: true,
-        overrides: { context_window_size: 2048 },
+        overrides: { context_window_size: 4096 },
     },
     // DeepSeek-R1 distillations
     {
@@ -122,6 +155,14 @@ export const PRESET_MODELS = [
         model_id: 'DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC',
         model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen2-7B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm`,
         vram_required_MB: 5438,
+        low_resource_required: false,
+        overrides: { context_window_size: 4096 },
+    },
+    {
+        model: 'https://huggingface.co/mlc-ai/DeepSeek-R1-Distill-Qwen-7B-q4f32_1-MLC',
+        model_id: 'DeepSeek-R1-Distill-Qwen-7B-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen2-7B-Instruct-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 7000, // Estimated
         low_resource_required: false,
         overrides: { context_window_size: 4096 },
     },
@@ -275,6 +316,7 @@ export function createModelFromUrl(huggingfaceUrl, options = {}) {
     if (!modelLib) {
         // Common model family detection patterns
         const patterns = [
+            { regex: /Qwen3\.5-(\d+\.?\d*)B/i, lib: (m) => `Qwen3.5-${m[1]}B` },
             { regex: /Qwen3-(\d+\.?\d*)B/i, lib: (m) => `Qwen3-${m[1]}B` },
             { regex: /Qwen2\.5?-(\d+\.?\d*)B/i, lib: (m) => `Qwen2-${m[1]}B-Instruct` },
             { regex: /Llama-3\.2?-(\d+)B/i, lib: (m) => `Llama-3.2-${m[1]}B-Instruct` },
