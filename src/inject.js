@@ -365,15 +365,8 @@ async function analyzePage(scanId = null) {
       } else {
         console.log('[Ghoti] Site is safe, not showing toolbar');
         // Un-inject warning if it was shown previously (e.g. from early WHOIS prediction)
-        // BUT: Keep it if it was a "known phishing" alert from the global DB and it's NOT a compare/forced scan
-        const tb = document.getElementById('ghoti-toolbar');
-        const isKnownPhishing = response.success && response.isKnownPhishing;
-
-        if (isKnownPhishing && tb && tb.textContent.includes('daha önceki analizlerde')) {
-          console.log('[Ghoti] Keeping "known phishing" toolbar despite safe scan result.');
-        } else {
-          removeToolbar();
-        }
+        // If a new local/remote scan explicitly finds it safe, we trust the result and remove the warning
+        removeToolbar();
       }
     }
   });
@@ -488,3 +481,53 @@ try {
 } catch (e) {
   // Extension context might be invalid if it was updated
 }
+
+// Listen for auth state updates specifically from Ghoti dashboard
+window.addEventListener('message', (event) => {
+  // Security check: Only trust messages from our own domain
+  const origin = event.origin || (event.originalEvent && event.originalEvent.origin);
+  const isGhotiOrigin = origin && (origin.includes('ghoti.com.tr') || origin.includes('localhost') || origin.includes('127.0.0.1'));
+  if (!isGhotiOrigin) return;
+
+  if (event.data && event.data.type === 'GHOTI_AUTH_UPDATE') {
+    console.log('[Ghoti] Received auth update from dashboard:', event.data.userSub);
+    chrome.runtime.sendMessage({
+      type: 'REINIT_AUTH',
+      token: event.data.token,
+      userSub: event.data.userSub
+    }, (response) => {
+      console.log('[Ghoti] REINIT_AUTH response:', response);
+      if (response && response.success) {
+        console.log('[Ghoti] Auth re-initialized successfully, re-scanning page.');
+        analyzePage('auth-refresh-' + Date.now());
+      }
+    });
+  }
+});
+
+// Proactive trace: If we are on a Ghoti page, check for existing session on load
+(function autoTraceAuth() {
+  const host = window.location.hostname;
+  const isGhotiHost = ['ghoti.com.tr', 'www.ghoti.com.tr', 'localhost', '127.0.0.1'].includes(host);
+  if (!isGhotiHost) return;
+
+  // Additional check for dev port if on localhost
+  if ((host === 'localhost' || host === '127.0.0.1') && window.location.port !== '9701') return;
+
+  console.log('[Ghoti] Proactive auth trace on:', window.location.href);
+  const token = localStorage.getItem('ghoti_token');
+  const sub = localStorage.getItem('ghoti_user_sub');
+
+  if (token && sub) {
+    console.log('[Ghoti] Found session in localStorage, sending REINIT_AUTH...');
+    chrome.runtime.sendMessage({
+      type: 'REINIT_AUTH',
+      token: token,
+      userSub: sub
+    }, (response) => {
+      console.log('[Ghoti] Proactive REINIT_AUTH response:', response);
+    });
+  } else {
+    console.log('[Ghoti] No session found in localStorage on this host.');
+  }
+})();

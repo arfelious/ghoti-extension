@@ -4,10 +4,12 @@ const REMOTE_QUERY_WS = "ws://localhost:9701/query";
 const REMOTE_SUBMIT_RESULT = "http://localhost:9701/submit-result";
 const REMOTE_STATS = "http://localhost:9701/stats";
 const REMOTE_WHOIS = "http://localhost:9701/whois";
+const REMOTE_AUTH_VERIFY = "http://localhost:9701/auth/verify";
 const whitelistDbName = 'GhotiDefaultWL';
 import { createLLMHandler, LLM_MESSAGE_TYPES } from './llm';
 import { buildSimplePrompt, buildLocalReasoningPrompt, buildLocalScoringPrompt, PHISHING_SCHEMA, verdictToScore } from 'shared/prompt-builder.js';
 import { DEFAULTS } from './config/defaults.js';
+import { SERVER_BASE } from './config/env.js';
 
 // Logging buffer for Settings page
 let MAX_LOGS = DEFAULTS.maxLogs;
@@ -19,6 +21,20 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync' && changes.maxLogs) {
         MAX_LOGS = changes.maxLogs.newValue;
     }
+
+    // Diagnostic Trace for Auth Keys (Phase 2.3)
+    if (area === 'local') {
+        const trackedKeys = ['AUTH_TOKEN', 'USER_SUB', 'auth_token', 'user_sub', 'SESSION_NONCE'];
+        const intersection = Object.keys(changes).filter(key => trackedKeys.includes(key));
+
+        if (intersection.length > 0) {
+            console.log('[Ghoti Storage Trace] Auth-related keys changed:');
+            intersection.forEach(key => {
+                const { oldValue, newValue } = changes[key];
+                console.log(`  - ${key}: ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
+            });
+        }
+    }
 });
 
 // Global state
@@ -26,8 +42,16 @@ let analysisResult = null;
 let currentTabId = null;
 let llmLoaded = false;
 let llmLoadingPromise = null;
+// Auth state
+let AUTH_TOKEN = null;
+let USER_SUB = null;
+let SESSION_NONCE = null; // Legacy fallback, kept for backward compat
 
-let SESSION_NONCE = null;
+// Initialization promise to handle race conditions - initialized early
+let backgroundInitResolve;
+const backgroundInitPromise = new Promise(resolve => {
+    backgroundInitResolve = resolve;
+});
 
 // Track last scanned URL per tab to prevent duplicate scans
 const lastScannedUrl = new Map();
@@ -35,20 +59,116 @@ const lastScannedUrl = new Map();
 // TrackTabs that need scanning but wasn't ready to receive START_SCAN
 const pendingScans = new Map();
 
-// Helper to manage per-tab scan status in session storage (persists through SW suspension)
+// LRU Cache Limits
+const DECISION_CACHE_LIMIT = 1000;
+const DETAILED_CACHE_LIMIT = 200;
+const CACHE_KEYS = {
+    DECISIONS: 'ghoti_decision_cache',
+    DETAILS: 'ghoti_detailed_cache',
+    STATUS: 'ghoti_tab_status'
+};
+
+/**
+ * Prune a result object for storage by removing redundant/large fields.
+ */
+function pruneResultForStorage(result) {
+    if (!result) return null;
+    const pruned = JSON.parse(JSON.stringify(result));
+    if (pruned.localResult) delete pruned.localResult.raw;
+    if (pruned.queryResult) delete pruned.queryResult.raw;
+    return pruned;
+}
+
+/**
+ * Update an LRU cache in chrome.storage.local.
+ */
+async function updateLRUCache(cacheKey, itemKey, value, limit) {
+    const data = await chrome.storage.local.get(cacheKey);
+    const cache = data[cacheKey] || {};
+
+    cache[itemKey] = { ...value, _cachedAt: Date.now() };
+
+    const keys = Object.keys(cache);
+    if (keys.length > limit) {
+        const sorted = keys.sort((a, b) => cache[a]._cachedAt - cache[b]._cachedAt);
+        const toRemove = sorted.slice(0, keys.length - limit);
+        toRemove.forEach(k => delete cache[k]);
+    }
+
+    await chrome.storage.local.set({ [cacheKey]: cache });
+}
+
 async function getTabScanStatus(tabId) {
     const key = `scan_status_${tabId}`;
     const data = await chrome.storage.session.get(key);
-    return data[key];
+    const status = data[key];
+
+    if (status && status.url && status.status === 'complete') {
+        const detailData = await chrome.storage.local.get(CACHE_KEYS.DETAILS);
+        const details = (detailData[CACHE_KEYS.DETAILS] || {})[status.url];
+        if (details) {
+            if (status.result.queryResult) {
+                status.result.queryResult.response = details.reasoning;
+                status.result.queryResult.riskFactors = details.riskFactors;
+            }
+            if (status.result.localResult) {
+                status.result.localResult.response = details.reasoning;
+                status.result.localResult.riskFactors = details.riskFactors;
+            }
+
+            // Re-evaluate if it's suspicious based on hydrated result
+            let finalRating = status.result.queryResult ? status.result.queryResult.finalRating : (status.result.localResult ? status.result.localResult.finalRating : 0);
+            let isSuspicious = finalRating > 60 || status.result.isKnownPhishing;
+            status.riskCount = isSuspicious ? details.riskFactors.length : 0;
+        }
+    }
+    return status;
 }
 
 async function setTabScanStatus(tabId, statusObj) {
     const key = `scan_status_${tabId}`;
-    await chrome.storage.session.set({ [key]: statusObj });
+    if (!statusObj) {
+        await chrome.storage.session.remove(key);
+        return;
+    }
+
+    if (statusObj.status === 'complete' && statusObj.result) {
+        const url = statusObj.result.url || statusObj.url;
+        const prunedResult = pruneResultForStorage(statusObj.result);
+
+        const rating = statusObj.result.queryResult?.finalRating || statusObj.result.localResult?.finalRating || 0;
+        const decision = {
+            rating: rating,
+            isKnownPhishing: !!statusObj.result.isKnownPhishing,
+            timestamp: Date.now()
+        };
+        await updateLRUCache(CACHE_KEYS.DECISIONS, url, decision, DECISION_CACHE_LIMIT);
+
+        const details = {
+            reasoning: prunedResult.queryResult?.response || prunedResult.localResult?.response,
+            riskFactors: prunedResult.queryResult?.riskFactors || prunedResult.localResult?.riskFactors || []
+        };
+        await updateLRUCache(CACHE_KEYS.DETAILS, url, details, DETAILED_CACHE_LIMIT);
+
+        const sessionStatus = {
+            status: 'complete',
+            url: url,
+            riskCount: details.riskFactors.length,
+            timestamp: statusObj.timestamp || Date.now(),
+            result: {
+                success: true,
+                isKnownPhishing: decision.isKnownPhishing,
+                queryResult: statusObj.result.queryResult ? { finalRating: rating } : null,
+                localResult: statusObj.result.localResult ? { finalRating: rating } : null
+            }
+        };
+        await chrome.storage.session.set({ [key]: sessionStatus });
+    } else {
+        await chrome.storage.session.set({ [key]: statusObj });
+    }
 }
 
-// Cache scan results for cacheScannedPages setting
-const pageCache = new Map(); // url -> { timestamp, result }
+// Decisions and Details are managed via CACHE_KEYS and updateLRUCache
 
 // Generate unique scan ID
 function generateScanId() {
@@ -89,6 +209,10 @@ async function broadcastScanProgress(tabId, status, message) {
  * Finalize a scan result and broadcast completion.
  */
 async function finalizeAndReturn(tabId, result, count) {
+    let finalRating = result.queryResult ? result.queryResult.finalRating : (result.localResult ? result.localResult.finalRating : 0);
+    // Settings are async, but since this is an older finalize wrapper, we assume globalThreshold=60 if missing
+    let isSuspicious = finalRating > 60 || result.isKnownPhishing;
+
     // Signal completion to tab and popup
     const statusObj = {
         status: 'complete',
@@ -98,7 +222,7 @@ async function finalizeAndReturn(tabId, result, count) {
     };
     await setTabScanStatus(tabId, statusObj);
 
-    updateBadge(tabId, count, false);
+    updateBadge(tabId, isSuspicious ? count : 0, false);
 
     chrome.tabs.sendMessage(tabId, { type: 'SCAN_COMPLETE', result }).catch(() => { });
     chrome.runtime.sendMessage({
@@ -111,34 +235,260 @@ async function finalizeAndReturn(tabId, result, count) {
     return result;
 }
 
-async function initSessionNonce() {
-    const data = await chrome.storage.local.get('SESSION_NONCE');
-    if (data.SESSION_NONCE) {
-        SESSION_NONCE = data.SESSION_NONCE;
-        console.log(`[Ghoti Background] Restored Session Nonce: ${SESSION_NONCE}`);
+// ========== AUTH LAYER ==========
+
+// Domains where we watch for ghoti login
+const GHOTI_DOMAINS = ['ghoti.com.tr', 'www.ghoti.com.tr', 'localhost', '127.0.0.1'];
+
+function isGhotiUrl(url) {
+    try {
+        const u = new URL(url);
+        // Match official domains or local dev server
+        const isOfficial = ['ghoti.com.tr', 'www.ghoti.com.tr'].includes(u.hostname);
+        const isLocalDev = (u.hostname === 'localhost' || u.hostname === '127.0.0.1') && (u.port === '9701' || u.port === 9701);
+
+        const match = isOfficial || isLocalDev;
+        if (match) console.log('[Ghoti Auth] isGhotiUrl true for:', url);
+        return match;
+    } catch { return false; }
+}
+
+/**
+ * Get the auth headers for server requests.
+ * Uses Bearer token if authenticated, falls back to nonce.
+ */
+function getAuthHeaders() {
+    if (AUTH_TOKEN) {
+        return { 'Authorization': `Bearer ${AUTH_TOKEN}` };
+    }
+    if (SESSION_NONCE) {
+        return { 'X-Ghoti-Nonce': SESSION_NONCE };
+    }
+    return {};
+}
+
+/**
+ * Get the clientId for request bodies.
+ */
+function getClientId() {
+    return USER_SUB || SESSION_NONCE || null;
+}
+
+/**
+ * Check if the user is authenticated (has a valid server-issued token).
+ */
+function isAuthenticated() {
+    return !!(AUTH_TOKEN && USER_SUB);
+}
+
+/**
+ * Layer 1: On startup, try to restore auth from chrome.storage.local
+ */
+async function initAuth() {
+    console.log('[Ghoti Auth] Starting initAuth...');
+    // Check both casings to support migration from older buggy builds
+    const data = await chrome.storage.local.get(['AUTH_TOKEN', 'USER_SUB', 'auth_token', 'user_sub', 'SESSION_NONCE']);
+    console.log('[Ghoti Auth] Storage Load Result:', JSON.stringify(data));
+    console.log('[Ghoti Auth] Raw storage keys found:', Object.keys(data));
+
+    // Try restoring OAuth session first (preferring uppercase)
+    const token = data.AUTH_TOKEN || data.auth_token;
+    const sub = data.USER_SUB || data.user_sub;
+
+    if (token && sub) {
+        AUTH_TOKEN = token;
+        USER_SUB = sub;
+        console.log(`[Ghoti Auth] Restored token for user: ${USER_SUB} (Token length: ${token.length})`);
+
+        // Migrate to uppercase if we found lowercase
+        if (data.auth_token || data.user_sub) {
+            console.log('[Ghoti Auth] Migrating lowercase storage keys to uppercase...');
+            await chrome.storage.local.set({ AUTH_TOKEN: token, USER_SUB: sub });
+            await chrome.storage.local.remove(['auth_token', 'user_sub']);
+        }
+
+        // Verify token with server
+        try {
+            console.log('[Ghoti Auth] Verifying token with server...');
+            const response = await fetch(REMOTE_AUTH_VERIFY, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${AUTH_TOKEN}`
+                }
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                console.log('[Ghoti Auth] Token verified successfully for:', result.user?.name || 'Unknown');
+                // Update sub in case it changed
+                if (result.user?.sub && result.user.sub !== USER_SUB) {
+                    console.log(`[Ghoti Auth] Updating USER_SUB: ${USER_SUB} -> ${result.user.sub}`);
+                    USER_SUB = result.user.sub;
+                    await chrome.storage.local.set({ USER_SUB });
+                }
+            } else {
+                console.warn('[Ghoti Auth] Token verification failed (status:', response.status, '), clearing auth');
+                const errText = await response.text().catch(() => 'No body');
+                console.debug('[Ghoti Auth] Server response:', errText);
+                await clearAuth();
+            }
+        } catch (e) {
+            console.warn('[Ghoti Auth] Server unreachable for verification, keeping stored token:', e.message);
+            // Keep token - server might just be down
+        }
     } else {
-        SESSION_NONCE = Math.random().toString(36).substring(2, 15);
-        await chrome.storage.local.set({ SESSION_NONCE });
-        console.log(`[Ghoti Background] Generated New Session Nonce: ${SESSION_NONCE}`);
+        console.log('[Ghoti Auth] No stored token found in storage.');
     }
 
-    // Sync with server
-    try {
-        const response = await fetch("http://localhost:9701/register-session", {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Ghoti-Nonce': SESSION_NONCE
-            },
-            body: JSON.stringify({ nonce: SESSION_NONCE })
-        });
-        if (response.ok) {
-            console.log('[Ghoti Background] Session registered with server');
+    // Legacy nonce fallback
+    if (!AUTH_TOKEN && data.SESSION_NONCE) {
+        SESSION_NONCE = data.SESSION_NONCE;
+        console.log(`[Ghoti Auth] Restored legacy session nonce: ${SESSION_NONCE}`);
+    }
+
+    // Broadcast auth state to popup/settings
+    broadcastAuthState();
+}
+
+/**
+ * Layer 2: Tab watcher — detect login on ghoti.com.tr or localhost:9701
+ */
+function setupLoginWatcher() {
+    chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+        // Only check completed navigations
+        if (changeInfo.status !== 'complete' || !tab.url) return;
+
+        if (!isGhotiUrl(tab.url)) return;
+
+        // Already authenticated? No need to check
+        if (isAuthenticated()) {
+            console.log('[Ghoti Auth] Already authenticated, skipping watcher check for tab:', tabId);
+            return;
         }
-    } catch (e) {
-        console.warn('[Ghoti Background] Failed to register session with server:', e.message);
+
+        console.log(`[Ghoti Auth] Watcher detected ghoti page load: ${tab.url}, checking for session in localStorage...`);
+
+        try {
+            // Read localStorage from the ghoti page to get token
+            const results = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                    return {
+                        token: localStorage.getItem('ghoti_token'),
+                        sub: localStorage.getItem('ghoti_user_sub'),
+                        name: localStorage.getItem('ghoti_user_name')
+                    };
+                }
+            });
+
+            const pageData = results?.[0]?.result;
+            if (pageData?.token && pageData?.sub) {
+                console.log(`[Ghoti Auth] Scraped session from page! User: ${pageData.name} (${pageData.sub})`);
+                AUTH_TOKEN = pageData.token;
+                USER_SUB = pageData.sub;
+                await chrome.storage.local.set({
+                    AUTH_TOKEN: pageData.token,
+                    USER_SUB: pageData.sub
+                });
+                console.log('[Ghoti Auth] Scraped session saved to storage.');
+                broadcastAuthState();
+            } else {
+                console.log('[Ghoti Auth] No session tokens found in page localStorage.');
+            }
+        } catch (e) {
+            console.debug('[Ghoti Auth] Could not read login state from tab:', e.message);
+        }
+    });
+}
+
+/**
+ * Startup sweep: Query all open tabs for a Ghoti session to avoid needing a reload
+ */
+async function syncAuthenticatedTabs() {
+    console.log('[Ghoti Auth] Starting startup sweep for existing sessions in open tabs...');
+    try {
+        const tabs = await chrome.tabs.query({});
+        const ghotiTabs = tabs.filter(t => t.url && isGhotiUrl(t.url));
+
+        if (ghotiTabs.length === 0) {
+            console.log('[Ghoti Auth] No Ghoti tabs found in sweep.');
+            return;
+        }
+
+        console.log(`[Ghoti Auth] Found ${ghotiTabs.length} Ghoti tabs. Proactively checking for sessions...`);
+
+        for (const tab of ghotiTabs) {
+            // Already found a token in a previous tab?
+            if (isAuthenticated()) break;
+
+            try {
+                const results = await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    func: () => {
+                        return {
+                            token: localStorage.getItem('ghoti_token'),
+                            sub: localStorage.getItem('ghoti_user_sub'),
+                            name: localStorage.getItem('ghoti_user_name')
+                        };
+                    }
+                });
+
+                const pageData = results?.[0]?.result;
+                if (pageData?.token && pageData?.sub) {
+                    console.log(`[Ghoti Auth] Recovery success from tab ${tab.id}! User: ${pageData.name}`);
+                    AUTH_TOKEN = pageData.token;
+                    USER_SUB = pageData.sub;
+                    await chrome.storage.local.set({
+                        AUTH_TOKEN: pageData.token,
+                        USER_SUB: pageData.sub
+                    });
+                    broadcastAuthState();
+                    break; // Stop after first success
+                }
+            } catch (e) {
+                console.debug(`[Ghoti Auth] Could not scrape tab ${tab.id}:`, e.message);
+            }
+        }
+    } catch (err) {
+        console.error('[Ghoti Auth] Sweep failed:', err);
     }
 }
+
+/**
+ * Layer 3: On extension install, open login page
+ */
+chrome.runtime.onInstalled.addListener((details) => {
+    if (details.reason === 'install') {
+        const loginUrl = `${SERVER_BASE}/login`;
+        console.log(`[Ghoti Auth] Extension installed, opening login page: ${loginUrl}`);
+        chrome.tabs.create({ url: loginUrl });
+    }
+});
+
+/**
+ * Clear auth state
+ */
+async function clearAuth() {
+    AUTH_TOKEN = null;
+    USER_SUB = null;
+    await chrome.storage.local.remove(['AUTH_TOKEN', 'USER_SUB']);
+    broadcastAuthState();
+}
+
+/**
+ * Broadcast auth state change to popup/settings
+ */
+function broadcastAuthState() {
+    chrome.runtime.sendMessage({
+        type: 'AUTH_STATE_CHANGED',
+        isAuthenticated: isAuthenticated(),
+        userSub: USER_SUB
+    }).catch(() => { });
+}
+
+// Start login watcher immediately
+setupLoginWatcher();
 
 function addBufferedLog(type, message) {
     // Privacy filter: Do not log messages that look like huge prompts
@@ -230,6 +580,10 @@ chrome.runtime.onInstalled.addListener(async () => {
     const currentSettings = await chrome.storage.sync.get(null);
     const newSettings = { ...DEFAULTS, ...currentSettings };
     await chrome.storage.sync.set(newSettings);
+
+    // Also clear persistent caches on update so the user gets fresh evaluations instead of old 12.5% bugs
+    await chrome.storage.local.remove(['ghoti_decision_cache', 'ghoti_detailed_cache']);
+    console.log('[Ghoti Background] Cleared persistent scan caches due to extension update.');
 });
 
 // Stats management
@@ -301,16 +655,15 @@ async function uploadResultToServer(result, settings) {
     }
 
     try {
-        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
         const response = await fetch(REMOTE_SUBMIT_RESULT, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Ghoti-Nonce': SESSION_NONCE || ''
+                ...getAuthHeaders()
             },
             body: JSON.stringify({
                 ...result,
-                clientId: SESSION_NONCE
+                clientId: getClientId()
             })
         });
 
@@ -488,7 +841,58 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    // Whitelist exemption management
+    if (request.type === 'REINIT_AUTH') {
+        const { token, userSub } = request;
+        if (token && userSub) {
+            console.log('[Ghoti Background] REINIT_AUTH received:', userSub);
+            // Update global state immediately
+            AUTH_TOKEN = token;
+            USER_SUB = userSub;
+
+            chrome.storage.local.set({
+                AUTH_TOKEN: token,
+                USER_SUB: userSub
+            }, () => {
+                if (chrome.runtime.lastError) {
+                    console.error('[Ghoti Background] Storage SET error:', chrome.runtime.lastError);
+                } else {
+                    console.log('[Ghoti Background] Tokens saved to storage. Verifying...');
+                }
+                initAuth().then(() => {
+                    sendResponse({ success: true });
+                }).catch(err => {
+                    console.error('[Ghoti Background] initAuth failed during REINIT:', err);
+                    sendResponse({ success: false, error: err.message });
+                });
+            });
+            return true;
+        } else {
+            console.warn('[Ghoti Background] REINIT_AUTH missing parameters:', request);
+            sendResponse({ success: false, error: 'Missing token or userSub' });
+            return false;
+        }
+    }
+
+    // Auth state queries
+    if (request.type === 'GET_AUTH_STATE') {
+        // Block until initialization is complete
+        backgroundInitPromise.then(() => {
+            console.log('[Ghoti Background] Responding to GET_AUTH_STATE. Authenticated:', isAuthenticated());
+            sendResponse({
+                isAuthenticated: isAuthenticated(),
+                userSub: USER_SUB
+            });
+        });
+        return true;
+    }
+
+    if (request.type === 'SIGN_OUT') {
+        clearAuth().then(() => {
+            sendResponse({ success: true });
+        });
+        return true;
+    }
+
     if (request.type === 'GET_EXEMPT_LIST') {
         chrome.storage.sync.get({ whitelistExemptions: DEFAULTS.whitelistExemptions }, (data) => {
             sendResponse({ exemptions: data.whitelistExemptions });
@@ -603,7 +1007,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         console.log('[Ghoti LLM]   Status after init:', handler.getStatus());
 
         // === STEP 1: GENERATE REASONING ===
-        const reasoningPrompt = buildLocalReasoningPrompt({ url, extractedData, whoisData });
+        const reasoningPrompt = buildLocalReasoningPrompt({ url, extractedData, whoisData }, {});
         console.log(`[Ghoti LLM] Step 1: Generating reasoning for ${domain}...`);
 
         // Reset chat history
@@ -615,7 +1019,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             message: reasoningPrompt,
             options: {
                 temperature: 0.2, // Slightly higher for reasoning
-                max_tokens: 2048 // Increased to prevent truncation of thinking/reasoning
+                max_tokens: 2048 // Increased from 1024 to accommodate chains-of-thought (CoT) and verbose analyses
             }
         });
 
@@ -624,9 +1028,10 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         // Strip <think>...</think> blocks (Qwen 3 chain-of-thought)
         // These are internal reasoning tokens that shouldn't be passed to Step 2
-        // However, some small models put their entire output in the think block.
-        const thinkMatch = reasoning.match(/<think>([\s\S]*?)<\/think>/i);
-        let strippedReasoning = reasoning.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').trim();
+        // If we hit max_tokens, the closing tag might be missing, so we match to $ as well.
+        const thinkMatch = reasoning.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+        // Robust stripping: handle nested or multi-line think blocks efficiently
+        let strippedReasoning = reasoning.replace(/<think>[\s\S]*?(?:<\/think>|$)\s*/gi, '').trim();
 
         if (!strippedReasoning && thinkMatch && thinkMatch[1].trim()) {
             // Model outputted nothing but a think block. We must use its internal thoughts as the reasoning.
@@ -649,7 +1054,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             message: scoringPrompt,
             options: {
                 temperature: 0.15, // Low temperature for consistent scoring
-                max_tokens: 512 // Increased buffer
+                max_tokens: 256 // Lowered to speed up generation, we only need a JSON
             }
         });
 
@@ -668,13 +1073,17 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
             const phishingKeywords = [
                 'RISK INDICATOR', 'IMPERSONATION', 'DECEPTIVE', 'ALMOST ALWAYS PHISHING',
                 'HIGH RISK', 'HIGH-RISK', 'CREDENTIAL THEFT', 'MALICIOUS',
-                'SUSPICIOUS TLD', 'PHISHING ATTEMPT', 'FAKE APPLICATION', '🚨'
+                'SUSPICIOUS TLD', 'PHISHING ATTEMPT', 'FAKE APPLICATION', '🚨',
+                'OLTALAMA', 'ŞÜPHELİ', 'YÜKSEK RİSK', 'KÖTÜ AMAÇLI', 'SUİİSTİMAL',
+                'TAKLİT', 'KREDİ KARTI', 'ŞİFRE ÇALMA', 'GÜVENLİ DEĞİL'
             ];
 
             // Check if analysis explicitly concludes it's safe without risks
             const safeKeywords = [
                 'LEGITIMATE', 'NO DECEPTIVE PATTERNS', 'NO SUSPICIOUS',
-                'NORMAL AND EXPECTED', 'HARMLESS'
+                'NORMAL AND EXPECTED', 'HARMLESS',
+                'GÜVENLİ', 'SAKINCA YOK', 'OLTALAMA DEĞİL', 'MEŞRU',
+                'NORMAL', 'RİSK BULUNMUYOR'
             ];
 
             const phishingHits = phishingKeywords.filter(k => fullText.includes(k)).length;
@@ -750,12 +1159,15 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         console.log(`[Ghoti LLM] ✓ Analysis complete: ${confidence}% | Phishing: ${isPhishing}`);
 
+        // Return local analysis result (without raw output)
         return {
-            isPhishing,
-            confidence,
-            reasoning,
-            riskFactors: extractedData?.riskIndicators || [],
-            raw: step1Result.content + "\n\nSCORE_JSON: " + step2Result.content
+            success: true,
+            isKnownPhishing: false,
+            localResult: {
+                finalRating: Math.round(confidence),
+                response: reasoning,
+                riskFactors: extractedData?.riskIndicators || [],
+            }
         };
 
     } catch (error) {
@@ -802,38 +1214,72 @@ async function handlePageAnalysis(data, tabId) {
         return { success: true, whoisResult: null, queryResult: { finalRating: 0, response: "URL is whitelisted." } }
     }
 
-    // Check Cache
-    if (settings.cacheScannedPages && pageCache.has(urlObj.href)) {
-        const cached = pageCache.get(urlObj.href);
-        if (Date.now() - cached.timestamp < 3600000) { // 1 hour
-            console.log('[Ghoti Background] Returning cached result for:', urlObj.href);
-            // Broadcast completion
-            await setTabScanStatus(tabId, null);
+    // Check Persistent Cache
+    // Bypass cache when testing locally or when forcing full analysis via compareMode
+    if (settings.cacheScannedPages && !settings.compareMode && urlObj.hostname !== "localhost" && urlObj.hostname !== "127.0.0.1") {
+        const decisionData = await chrome.storage.local.get(CACHE_KEYS.DECISIONS);
+        const cached = (decisionData[CACHE_KEYS.DECISIONS] || {})[urlObj.href];
+
+        if (cached && (Date.now() - cached._cachedAt < 3600000)) { // 1 hour cache
+            console.log('[Ghoti Background] Returning persistent cached result for:', urlObj.href);
+
+            // Reconstruct a minimal result for the UI from the decision summary
+            // Full details (reasoning, riskFactors) will be hydrated by getTabScanStatus when popup opens
+            const reconstructedResult = {
+                success: true,
+                isKnownPhishing: cached.isKnownPhishing,
+                queryResult: cached.rating > settings.globalThreshold ? { finalRating: cached.rating } : null,
+                localResult: cached.rating <= settings.globalThreshold ? { finalRating: cached.rating } : null
+            };
+
+            // Write directly to session storage — do NOT go through setTabScanStatus
+            // which would overwrite the real DETAILS cache with this skeleton result
+            const sessionKey = `scan_status_${tabId}`;
+            await chrome.storage.session.set({
+                [sessionKey]: {
+                    status: 'complete',
+                    url: urlObj.href,
+                    riskCount: 0, // Hydrated later by getTabScanStatus
+                    timestamp: cached._cachedAt,
+                    result: reconstructedResult
+                }
+            });
+
             chrome.runtime.sendMessage({
                 type: 'SCAN_COMPLETE',
                 tabId: tabId,
-                result: cached.result
+                result: reconstructedResult,
+                riskCount: 0
             }).catch(() => { });
-            return cached.result;
-        } else {
-            pageCache.delete(urlObj.href);
+
+            return reconstructedResult;
         }
     }
 
     // Helper to finalize, cache, broadcast, and return
     const finalizeAndReturn = async (result) => {
-        if (settings.cacheScannedPages && result.success && result.localResult?.source !== 'error') {
-            pageCache.set(urlObj.href, { timestamp: Date.now(), result });
-        }
+        // Result is already pruned inside setTabScanStatus
+        const riskCount = (result.queryResult?.riskFactors?.length) || (result.localResult?.riskFactors?.length) || (extractedData?.riskIndicators?.length) || 0;
 
-        const riskCount = (result.queryResult?.riskFactors?.length) || (extractedData?.riskIndicators?.length) || 0;
-        await setTabScanStatus(tabId, { status: 'complete', result, riskCount, timestamp: Date.now() });
-        updateBadge(tabId, riskCount, false);
+        let finalRating = result.queryResult ? result.queryResult.finalRating : (result.localResult ? result.localResult.finalRating : 0);
+        let isSuspicious = finalRating > settings.globalThreshold || result.isKnownPhishing;
+
+        // Persist globally and for this tab
+        await setTabScanStatus(tabId, {
+            status: 'complete',
+            url: urlObj.href,
+            result,
+            riskCount,
+            timestamp: Date.now()
+        });
+
+        // Only show badge if the site is actually considered suspicious or phishing
+        updateBadge(tabId, isSuspicious ? riskCount : 0, false);
 
         chrome.runtime.sendMessage({
             type: 'SCAN_COMPLETE',
             tabId: tabId,
-            result: result,
+            result: pruneResultForStorage(result), // Don't send 'raw' to UI
             riskCount: riskCount
         }).catch(() => { });
         return result;
@@ -848,12 +1294,11 @@ async function handlePageAnalysis(data, tabId) {
     try {
         broadcastScanProgress(tabId, 'fetching_init', 'Sunucuyla iletişim kuruluyor...');
         let payloadUrl = settings.sendDomainOnlyUntilPhishing ? urlObj.hostname : url;
-        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
         const initResponse = await fetch(REMOTE_INIT, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
-                "X-Ghoti-Nonce": SESSION_NONCE || ''
+                ...getAuthHeaders()
             },
             body: JSON.stringify({ version: "0.1.0", url: payloadUrl })
         });
@@ -881,8 +1326,8 @@ async function handlePageAnalysis(data, tabId) {
     console.log('[Ghoti Background] Local Analysis Result:', localAnalysis);
 
     let localSuspicion = 0;
-    if (!localAnalysis.error) {
-        localSuspicion = localAnalysis.confidence || 0;
+    if (!localAnalysis.error && localAnalysis.localResult) {
+        localSuspicion = localAnalysis.localResult.finalRating || 0;
     }
 
     // 2. Decide whether to use Remote Analysis
@@ -917,7 +1362,7 @@ async function handlePageAnalysis(data, tabId) {
                 domain: urlObj.hostname,
                 confidence: localSuspicion,
                 isPhishing: isPhishing,
-                reasoning: localAnalysis.reasoning,
+                reasoning: localAnalysis.localResult?.response,
                 riskFactors: extractedData?.riskIndicators || [],
                 extractedData: extractedData,
                 modelUsed: 'local-webllm'
@@ -931,7 +1376,7 @@ async function handlePageAnalysis(data, tabId) {
             queryResult: null, // No remote analysis for trusted sites
             localResult: {
                 finalRating: localSuspicion,
-                response: localAnalysis.reasoning || "Analyzed locally, deemed safe.",
+                response: localAnalysis.localResult?.response || "Analyzed locally, deemed safe.",
                 source: "local",
                 riskFactors: localAnalysis.riskFactors || [], // Ensure risks are passed
                 error: null
@@ -984,7 +1429,7 @@ async function handlePageAnalysis(data, tabId) {
                     const payload = {
                         version: "0.1.0",
                         url: url,
-                        clientId: SESSION_NONCE,
+                        clientId: getClientId(),
                         extractedData: extractedData,
                     };
 
@@ -1151,12 +1596,11 @@ async function handleWhoisLookup(data) {
     const { domain } = data;
 
     try {
-        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
         const response = await fetch(REMOTE_WHOIS, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
-                "X-Ghoti-Nonce": SESSION_NONCE || ''
+                ...getAuthHeaders()
             },
             body: JSON.stringify({
                 version: "0.1.0",
@@ -1256,7 +1700,31 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Initialize LLM and Session on boot
 (async () => {
-    await initSessionNonce();
+    console.log('[Ghoti Background] Starting global initialization...');
+    try {
+        await initAuth();
+    } catch (err) {
+        console.error('[Ghoti Background] Critical error during initAuth:', err);
+    }
+
+    // One-time cleanup: purge stale "Yükleniyor..." entries from a previous buggy build
+    try {
+        const detailData = await chrome.storage.local.get(CACHE_KEYS.DETAILS);
+        const details = detailData[CACHE_KEYS.DETAILS];
+        if (details) {
+            let changed = false;
+            for (const url of Object.keys(details)) {
+                if (details[url].reasoning === 'Yükleniyor...') {
+                    delete details[url];
+                    changed = true;
+                }
+            }
+            if (changed) {
+                await chrome.storage.local.set({ [CACHE_KEYS.DETAILS]: details });
+                console.log('[Ghoti Background] Cleaned stale cache entries');
+            }
+        }
+    } catch (e) { /* ignore */ }
 
     const settings = await chrome.storage.sync.get(DEFAULTS);
     if (settings.preloadLLM && settings.isActive) {
@@ -1267,6 +1735,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
             console.error('[Ghoti Background] Failed to pre-load LLM:', e);
         }
     }
+    console.log('[Ghoti Background] Global initialization complete.');
+
+    // Final step: Sweep open tabs to recovery session without a reload
+    syncAuthenticatedTabs().then(() => {
+        backgroundInitResolve(); // Resolve the promise so message listeners can proceed
+    });
 })();
 
 // Start heartbeat

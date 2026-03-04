@@ -35,6 +35,10 @@
       <span class="status-label">Sayfa:</span>
       <span id="page-status" class="status-value">-</span>
     </div>
+    <div class="status-item">
+      <span class="status-label">Hesap:</span>
+      <span id="auth-status" class="status-value">-</span>
+    </div>
 
     <!-- Model output panel (visible when both expanded) -->
     <section id="output-panel" class="panel-output">
@@ -52,10 +56,15 @@
     <header class="popup-header">
       <div class="logo-container">
         <img src="../icons/logo_128.png" alt="Ghoti">
-        <label class="switch">
-          <input type="checkbox" id="active-checkbox">
-          <span class="slider round"></span>
-        </label>
+        <div class="header-controls">
+          <label class="switch" title="Uzantıyı Aç/Kapat">
+            <input type="checkbox" id="active-checkbox">
+            <span class="slider round"></span>
+          </label>
+          <div id="header-auth-indicator" class="auth-indicator" title="Giriş durumu kontrol ediliyor...">
+            <!-- Will be populated by JS -->
+          </div>
+        </div>
       </div>
     </header>
 

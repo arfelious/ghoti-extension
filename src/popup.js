@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
     setupEventListeners();
     setupLLMStatusPolling();
+    checkAuthStatus();
     fetchInitialScanResult(); // Fetch result of current page if already analyzed
 });
 
@@ -216,6 +217,17 @@ function updatePopupDimensions() {
 }
 
 /**
+ * Check authentication status and show in popup
+ */
+function checkAuthStatus() {
+    console.log('[Ghoti Popup] Requesting auth state...');
+    chrome.runtime.sendMessage({ type: 'GET_AUTH_STATE' }, (response) => {
+        console.log('[Ghoti Popup] Auth state response:', response);
+        renderAuthUI(response && response.isAuthenticated);
+    });
+}
+
+/**
  * Setup LLM status polling
  */
 function setupLLMStatusPolling() {
@@ -283,8 +295,42 @@ function setupLLMStatusPolling() {
                     }
                 }
             });
+        } else if (message.type === 'AUTH_STATE_CHANGED') {
+            renderAuthUI(message.isAuthenticated);
         }
     });
+}
+
+/**
+ * Update all auth-related UI elements
+ */
+/**
+ * Update all auth-related UI elements (Modularized)
+ */
+function renderAuthUI(isAuthenticated) {
+    // 1. Left panel text indicator
+    const authEl = document.getElementById('auth-status');
+    if (authEl) {
+        if (isAuthenticated) {
+            authEl.textContent = 'Giriş yapıldı';
+            authEl.className = 'status-value ready';
+        } else {
+            authEl.textContent = 'Giriş yapılmadı';
+            authEl.className = 'status-value error';
+        }
+    }
+
+    // 2. Header checkmark indicator
+    const headerIndicator = document.getElementById('header-auth-indicator');
+    if (headerIndicator) {
+        if (isAuthenticated) {
+            headerIndicator.classList.add('authenticated');
+            headerIndicator.title = 'Giriş başarılı. Sunucu analizleri aktif.';
+        } else {
+            headerIndicator.classList.remove('authenticated');
+            headerIndicator.title = 'Giriş yapılmadı. Sunucu analizi için ghoti.com.tr sitesinde giriş yapın.';
+        }
+    }
 }
 
 /**
@@ -370,6 +416,33 @@ async function fetchInitialScanResult() {
 
                     renderRiskDetails(riskFactors);
                 }
+            } else {
+                // Final fallback: try LRU Cache directly to catch extension restarts where session is lost
+                chrome.storage.local.get(['ghoti_decision_cache', 'ghoti_detailed_cache'], (caches) => {
+                    const decisions = caches['ghoti_decision_cache'] || {};
+                    const detailsMap = caches['ghoti_detailed_cache'] || {};
+                    const cachedDecision = decisions[tab.url];
+                    if (cachedDecision) {
+                        const details = detailsMap[tab.url] || {};
+                        const reasoning = details.reasoning;
+                        // Skip stale placeholder entries
+                        if (!reasoning || reasoning === 'Yükleniyor...') return;
+                        const result = {
+                            success: true,
+                            isKnownPhishing: cachedDecision.isKnownPhishing,
+                            queryResult: { finalRating: cachedDecision.rating, response: reasoning, riskFactors: details.riskFactors || [] },
+                            localResult: { finalRating: cachedDecision.rating, response: reasoning, riskFactors: details.riskFactors || [] }
+                        };
+                        const domain = new URL(tab.url).hostname;
+                        updateModelOutput(result, domain);
+
+                        const pageStatusEl = document.getElementById('page-status');
+                        if (pageStatusEl) {
+                            pageStatusEl.textContent = 'Önbellekten Yüklendi';
+                            pageStatusEl.className = 'status-value ready';
+                        }
+                    }
+                });
             }
         });
     } catch (e) {
@@ -489,8 +562,8 @@ function updateModelOutput(result, domain = null) {
         if (sourceData) {
             let response = sourceData.response || sourceData.reasoning || "";
 
-            // Strip <think>...</think> tags and content
-            response = response.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+            // Strip <think>...</think> tags and content, including unfinished blocks if length limits were hit
+            response = response.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
 
             const rating = sourceData.finalRating !== undefined ? `Risk: %${sourceData.finalRating}\n\n` : "";
             const domainHeader = domain ? `${domain}\n-------------------\n` : "";
@@ -516,15 +589,18 @@ async function reportPage() {
         const baseUrl = SERVER_BASE; // Use configured server base
         const domain = new URL(tab.url).hostname;
 
-        // Get session nonce for authentication
-        const { SESSION_NONCE } = await chrome.storage.local.get('SESSION_NONCE');
+        // Get auth token for authentication
+        const authData = await chrome.storage.local.get(['AUTH_TOKEN', 'SESSION_NONCE']);
+        const authHeaders = authData.AUTH_TOKEN
+            ? { 'Authorization': `Bearer ${authData.AUTH_TOKEN}` }
+            : { 'X-Ghoti-Nonce': authData.SESSION_NONCE || '' };
 
         // Note: The /report endpoint takes { url, domain } and records in DB.
         const response = await fetch(`${baseUrl}/report`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Ghoti-Nonce': SESSION_NONCE || ''
+                ...authHeaders
             },
             body: JSON.stringify({ url: tab.url, domain })
         });

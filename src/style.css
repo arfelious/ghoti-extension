@@ -247,6 +247,51 @@ body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
   height: 32px;
 }
 
+/* Header controls (Auth tick and Switch) */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent);
+  transition: all var(--transition);
+}
+
+.auth-indicator.authenticated {
+  background: var(--success);
+  border-color: var(--success);
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.3);
+}
+
+.auth-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: all var(--transition);
+}
+
+.auth-indicator.authenticated .auth-dot {
+  /* Transform dot into a checkmark */
+  width: 5px;
+  height: 10px;
+  background: transparent;
+  border-radius: 0;
+  border-right: 2px solid var(--bg-primary);
+  border-bottom: 2px solid var(--bg-primary);
+  transform: rotate(45deg) scale(0.9);
+  margin-top: -2px;
+}
+
 /* Toggle switch */
 .switch {
   position: relative;
