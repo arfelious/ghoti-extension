@@ -234,6 +234,7 @@ body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
   padding: 8px 12px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--accent);
+  position: relative;
 }
 
 .logo-container {
@@ -264,6 +265,10 @@ body[data-expanded-left="true"][data-expanded-bottom="false"] .quick-actions {
   background: var(--bg-primary);
   border: 1px solid var(--accent);
   transition: all var(--transition);
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .auth-indicator.authenticated {

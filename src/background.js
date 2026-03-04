@@ -22,6 +22,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
         MAX_LOGS = changes.maxLogs.newValue;
     }
 
+    /*
     // Diagnostic Trace for Auth Keys (Phase 2.3)
     if (area === 'local') {
         const trackedKeys = ['AUTH_TOKEN', 'USER_SUB', 'auth_token', 'user_sub', 'SESSION_NONCE'];
@@ -35,6 +36,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
             });
         }
     }
+    */
 });
 
 // Global state
@@ -527,19 +529,23 @@ function setupHeartbeat() {
 
     console.log(`[Ghoti Heartbeat] Setting up heartbeat every ${INTERVAL_SECONDS}s...`);
 
-    chrome.alarms.create(ALARM_NAME, { periodInMinutes: INTERVAL_SECONDS / 60 });
+    if (chrome.alarms) {
+        chrome.alarms.create(ALARM_NAME, { periodInMinutes: INTERVAL_SECONDS / 60 });
 
-    chrome.alarms.onAlarm.addListener((alarm) => {
-        if (alarm.name === ALARM_NAME) {
-            // Trivial extension API call to reset the idle timer
-            chrome.storage.local.get([STATS_KEY], () => {
-                const now = new Date().toLocaleTimeString();
-                // We don't want to spam the log buffer with heartbeats, 
-                // so we just log to the real console
-                originalLog.apply(console, [`[Ghoti Heartbeat] 💓 Pulsed at ${now}`]);
-            });
-        }
-    });
+        chrome.alarms.onAlarm.addListener((alarm) => {
+            if (alarm.name === ALARM_NAME) {
+                // Trivial extension API call to reset the idle timer
+                chrome.storage.local.get([STATS_KEY], () => {
+                    const now = new Date().toLocaleTimeString();
+                    // We don't want to spam the log buffer with heartbeats, 
+                    // so we just log to the real console
+                    originalLog.apply(console, [`[Ghoti Heartbeat] 💓 Pulsed at ${now}`]);
+                });
+            }
+        });
+    } else {
+        console.warn('[Ghoti Heartbeat] chrome.alarms API not available. Heartbeat degraded to setInterval only.');
+    }
 
     // Also send a heartbeat message to the script itself every 25s
     // to ensure the internal timers and event loop stay active

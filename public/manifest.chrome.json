@@ -22,8 +22,7 @@
     "scripting",
     "tabs",
     "storage",
-    "nativeMessaging",
-    "alarms"
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -51,7 +50,8 @@
     {
       "resources": [
         "turkish.txt",
-        "ngrams.txt"
+        "ngrams.txt",
+        "models/*"
       ],
       "matches": [
         "<all_urls>"
