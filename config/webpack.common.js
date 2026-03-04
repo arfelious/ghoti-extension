@@ -6,6 +6,10 @@ const TerserPlugin = require('terser-webpack-plugin');
 
 const PATHS = require('./paths');
 
+// Detect target browser from environment
+const TARGET_BROWSER = process.env.TARGET_BROWSER || 'chrome';
+console.log(`[Ghoti Build] Target: ${TARGET_BROWSER}`);
+
 // used in the module rules and in the stats exlude list
 const IMAGE_TYPES = /\.(png|jpe?g|gif|svg)$/i;
 
@@ -75,6 +79,20 @@ const common = {
         {
           from: '**/*',
           context: 'public',
+          filter: (resourcePath) => {
+            // Exclude browser-specific template manifests
+            const isTemplate = resourcePath.endsWith('manifest.chrome.json') ||
+              resourcePath.endsWith('manifest.firefox.json');
+            // Exclude the development manifest file if it exists (it's generated/overwritten)
+            const isGenerated = resourcePath.endsWith('manifest.json');
+
+            return !isTemplate && !isGenerated;
+          },
+        },
+        // Pick the correct manifest template and copy as manifest.json
+        {
+          from: `public/manifest.${TARGET_BROWSER}.json`,
+          to: 'manifest.json',
         },
       ],
     }),
