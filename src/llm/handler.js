@@ -199,18 +199,68 @@ export function createLLMHandler(options = {}) {
         isProcessing = true;
 
         while (requestQueue.length > 0) {
-            const { message, options, resolve, reject } = requestQueue.shift();
+            const { type, payload, resolve, reject } = requestQueue.shift();
 
             try {
-                console.log("processing", message, options)
-                const result = await executeChat(message, options);
+                console.log(`[LLM Handler] Processing queued request: ${type}`);
+                let result;
+
+                switch (type) {
+                    case 'INIT':
+                        await initEngine(payload.modelId);
+                        result = { success: true, status };
+                        break;
+                    case 'CHAT':
+                        result = await executeChat(payload.message, payload.options);
+                        break;
+                    case 'CHAT_STREAM':
+                        result = await executeChatStream(payload.message, payload.options, payload.streamId, payload.sender);
+                        break;
+                    case 'RESET':
+                        if (engine) await engine.resetChat();
+                        chatHistory = [];
+                        result = { success: true };
+                        break;
+                    case 'RELOAD':
+                        await unloadEngine();
+                        await initEngine(payload.modelId);
+                        result = { success: true, modelId: currentModelId };
+                        break;
+                    case 'UNLOAD':
+                        await unloadEngine();
+                        result = { success: true };
+                        break;
+                    case 'CUSTOM_MODEL_ADD':
+                        result = await addCustomModel(payload.modelRecord);
+                        break;
+                    case 'CUSTOM_MODEL_REMOVE':
+                        await removeCustomModel(payload.modelId);
+                        result = { success: true };
+                        break;
+                    default:
+                        throw new Error(`Unknown queued request type: ${type}`);
+                }
                 resolve(result);
             } catch (error) {
+                console.error(`[LLM Handler] Error processing ${type}:`, error);
                 reject(error);
             }
         }
 
         isProcessing = false;
+    }
+
+    /**
+     * Enqueue a request for sequential processing
+     * @param {string} type - Request type
+     * @param {Object} payload - Data for the request
+     * @returns {Promise<any>}
+     */
+    function enqueue(type, payload = {}) {
+        return new Promise((resolve, reject) => {
+            requestQueue.push({ type, payload, resolve, reject });
+            processQueue();
+        });
     }
 
     /**
@@ -259,19 +309,9 @@ export function createLLMHandler(options = {}) {
     }
 
     /**
-     * Handle chat completion (non-streaming) - queued for thread safety
+     * Execute streaming chat completion (internal, called by queue processor)
      */
-    function handleChat(message, options = {}) {
-        return new Promise((resolve, reject) => {
-            requestQueue.push({ message, options, resolve, reject });
-            processQueue();
-        });
-    }
-
-    /**
-     * Handle streaming chat completion
-     */
-    async function handleChatStream(message, options = {}, streamId, sender) {
+    async function executeChatStream(message, options = {}, streamId, sender) {
         await initEngine();
         status = LLM_STATUS.GENERATING;
 
@@ -334,6 +374,7 @@ export function createLLMHandler(options = {}) {
             }
 
             status = LLM_STATUS.READY;
+            resetInactivityTimer();
             return { success: true };
         } catch (error) {
             status = LLM_STATUS.ERROR;
@@ -348,25 +389,22 @@ export function createLLMHandler(options = {}) {
         try {
             switch (message.type) {
                 case LLM_MESSAGE_TYPES.INIT:
-                    await initEngine();
-                    return { success: true, status };
+                    return await enqueue('INIT', { modelId: message.modelId });
 
                 case LLM_MESSAGE_TYPES.CHAT:
-                    return await handleChat(message.message, message.options);
+                    return await enqueue('CHAT', { message: message.message, options: message.options });
 
                 case LLM_MESSAGE_TYPES.CHAT_STREAM:
-                    // Don't await - let it stream
-                    handleChatStream(message.message, message.options, message.streamId, sender);
+                    // Enqueue but don't strictly await the result for the caller, 
+                    // although the background process WILL be sequential.
+                    enqueue('CHAT_STREAM', { message: message.message, options: message.options, streamId: message.streamId, sender });
                     return { success: true, streaming: true };
 
                 case LLM_MESSAGE_TYPES.RESET:
-                    if (engine) {
-                        await engine.resetChat();
-                    }
-                    chatHistory = [];
-                    return { success: true };
+                    return await enqueue('RESET');
 
                 case LLM_MESSAGE_TYPES.ABORT:
+                    // ABORT is one of the few messages that should interrupt immediately if possible
                     if (engine) {
                         await engine.interruptGenerate();
                     }
@@ -386,11 +424,10 @@ export function createLLMHandler(options = {}) {
                     return await getAllAvailableModels();
 
                 case LLM_MESSAGE_TYPES.ADD_CUSTOM_MODEL:
-                    return await addCustomModel(message.modelRecord);
+                    return await enqueue('CUSTOM_MODEL_ADD', { modelRecord: message.modelRecord });
 
                 case LLM_MESSAGE_TYPES.REMOVE_CUSTOM_MODEL:
-                    await removeCustomModel(message.modelId);
-                    return { success: true };
+                    return await enqueue('CUSTOM_MODEL_REMOVE', { modelId: message.modelId });
 
                 case LLM_MESSAGE_TYPES.GET_SELECTED_MODEL:
                     return { modelId: await getSelectedModel() };
@@ -400,14 +437,10 @@ export function createLLMHandler(options = {}) {
                     return { success: true };
 
                 case LLM_MESSAGE_TYPES.RELOAD_MODEL:
-                    // Unload current and load new model
-                    await unloadEngine();
-                    await initEngine(message.modelId);
-                    return { success: true, modelId: currentModelId };
+                    return await enqueue('RELOAD', { modelId: message.modelId });
 
                 case LLM_MESSAGE_TYPES.UNLOAD_MODEL:
-                    await unloadEngine();
-                    return { success: true };
+                    return await enqueue('UNLOAD');
 
                 default:
                     return { error: `Unknown message type: ${message.type}` };

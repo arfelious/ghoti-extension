@@ -271,7 +271,7 @@ function setupLLMStatusPolling() {
 
                     // Update local state and output
                     currentScanResult = message.result;
-                    updateModelOutput(message.result, domain);
+                    updateModelOutput(message.result, domain, true);
 
                     const pageStatusEl = document.getElementById('page-status');
                     if (pageStatusEl) {
@@ -357,7 +357,7 @@ async function fetchInitialScanResult() {
                 // Background has a result! Use it instead of asking tab (persistence fix)
                 console.log('[Ghoti Popup] Stored result found in background:', scanStatus.result);
                 const domain = new URL(tab.url).hostname;
-                updateModelOutput(scanStatus.result, domain);
+                updateModelOutput(scanStatus.result, domain, true);
 
                 const pageStatusEl = document.getElementById('page-status');
                 if (pageStatusEl) {
@@ -393,7 +393,7 @@ async function fetchInitialScanResult() {
             if (response && response.success && response.result) {
                 console.log('[Ghoti Popup] Initial result received:', response.result);
                 const domain = new URL(tab.url).hostname;
-                updateModelOutput(response.result, domain);
+                updateModelOutput(response.result, domain, true);
 
                 const pageStatusEl = document.getElementById('page-status');
                 if (pageStatusEl) {
@@ -430,11 +430,14 @@ async function fetchInitialScanResult() {
                         const result = {
                             success: true,
                             isKnownPhishing: cachedDecision.isKnownPhishing,
-                            queryResult: { finalRating: cachedDecision.rating, response: reasoning, riskFactors: details.riskFactors || [] },
-                            localResult: { finalRating: cachedDecision.rating, response: reasoning, riskFactors: details.riskFactors || [] }
+                            // In cache, we store the final reasoning. Use the new 'source' field 
+                            // to avoid mirroring the same text into both slots.
+                            queryResult: details.source === 'remote' ? { finalRating: cachedDecision.rating, response: reasoning, riskFactors: details.riskFactors || [], isCached: true } : null,
+                            localResult: details.source !== 'remote' ? { finalRating: cachedDecision.rating, response: reasoning, riskFactors: details.riskFactors || [], isCached: true } : null,
+                            isCachedFull: true
                         };
                         const domain = new URL(tab.url).hostname;
-                        updateModelOutput(result, domain);
+                        updateModelOutput(result, domain, true);
 
                         const pageStatusEl = document.getElementById('page-status');
                         if (pageStatusEl) {
@@ -542,35 +545,47 @@ function toggleOutputSource() {
 /**
  * Update model output display
  */
-function updateModelOutput(result, domain = null) {
+function updateModelOutput(result, domain = null, autoSwitch = false) {
     if (!result) return;
     currentScanResult = result;
 
     const outputEl = document.getElementById('model-output');
     if (outputEl) {
+        // Auto-switch: If remote is requested but only local exists, switch to local
+        if (autoSwitch && currentOutputSource === 'remote' && !result.queryResult && result.localResult) {
+            console.log('[Ghoti Popup] Remote missing, auto-switching to local view');
+            currentOutputSource = 'local';
+            const titleEl = document.getElementById('output-title');
+            if (titleEl) titleEl.textContent = 'Yerel Çıktı';
+        }
+
         let content = null;
         let sourceData = currentOutputSource === 'remote' ? result.queryResult : result.localResult;
 
-        // Auto-switch to local if remote is requested but missing
-        if (currentOutputSource === 'remote' && !result.queryResult && result.localResult) {
-            console.log('[Ghoti Popup] Remote result missing, showing local fallback');
-            sourceData = result.localResult;
-            const titleEl = document.getElementById('output-title');
-            if (titleEl) titleEl.textContent = 'Yerel Çıktı (Otomatik)';
-        }
-
         if (sourceData) {
-            let response = sourceData.response || sourceData.reasoning || "";
+            console.log('[Ghoti Popup] Rendering sourceData:', sourceData);
+            let response = sourceData.response || sourceData.reasoning || sourceData.text || sourceData.raw || "";
 
-            // Strip <think>...</think> tags and content, including unfinished blocks if length limits were hit
+            // Strip <think>...</think> tags and content
             response = response.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
 
             const rating = sourceData.finalRating !== undefined ? `Risk: %${sourceData.finalRating}\n\n` : "";
             const domainHeader = domain ? `${domain}\n-------------------\n` : "";
-            content = response ? `${domainHeader}${rating}${response}` : null;
+            const sourceLabel = sourceData.isCached ? " (Önbellek)" : "";
+            const prefix = currentOutputSource === 'remote' ? `GENEL ANALİZ${sourceLabel}:\n` : `YEREL ANALİZ${sourceLabel}:\n`;
+            content = response ? `${domainHeader}${prefix}${rating}${response}` : null;
         }
 
-        outputEl.textContent = content || (currentOutputSource === 'remote' ? 'Genel analiz yapılmadı' : 'Yerel analiz yapılmadı');
+        if (!content) {
+            const domainHeader = domain ? `${domain}\n-------------------\n` : "";
+            const prefix = currentOutputSource === 'remote' ? `GENEL ANALİZ:\n` : `YEREL ANALİZ:\n`;
+            const msg = currentOutputSource === 'remote'
+                ? 'Sunucu analizi henüz tamamlanmadı veya bu site için gerekmedi.'
+                : 'Yerel analiz henüz tamamlanmadı veya kapatıldı.';
+            content = `${domainHeader}${prefix}${msg}`;
+        }
+
+        outputEl.textContent = content;
     }
 }
 

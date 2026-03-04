@@ -110,11 +110,11 @@ async function getTabScanStatus(tabId) {
         const details = (detailData[CACHE_KEYS.DETAILS] || {})[status.url];
         if (details) {
             if (status.result.queryResult) {
-                status.result.queryResult.response = details.reasoning;
+                status.result.queryResult.response = details.queryReasoning || details.reasoning;
                 status.result.queryResult.riskFactors = details.riskFactors;
             }
             if (status.result.localResult) {
-                status.result.localResult.response = details.reasoning;
+                status.result.localResult.response = details.localReasoning || details.reasoning;
                 status.result.localResult.riskFactors = details.riskFactors;
             }
 
@@ -148,7 +148,10 @@ async function setTabScanStatus(tabId, statusObj) {
 
         const details = {
             reasoning: prunedResult.queryResult?.response || prunedResult.localResult?.response,
-            riskFactors: prunedResult.queryResult?.riskFactors || prunedResult.localResult?.riskFactors || []
+            queryReasoning: prunedResult.queryResult?.response || null,
+            localReasoning: prunedResult.localResult?.response || null,
+            riskFactors: prunedResult.queryResult?.riskFactors || prunedResult.localResult?.riskFactors || [],
+            source: prunedResult.queryResult ? 'remote' : 'local'
         };
         await updateLRUCache(CACHE_KEYS.DETAILS, url, details, DETAILED_CACHE_LIMIT);
 
@@ -457,16 +460,40 @@ async function syncAuthenticatedTabs() {
     }
 }
 
-/**
- * Layer 3: On extension install, open login page
- */
+const LLM_PORT_NAME = 'llm-service';
+const ngramCache = {}; // Cache for shared text assets (turkish.txt, ngrams.txt)
+
+// --- Initialization ---
 chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === 'install') {
+        chrome.storage.sync.set(DEFAULTS);
         const loginUrl = `${SERVER_BASE}/login`;
         console.log(`[Ghoti Auth] Extension installed, opening login page: ${loginUrl}`);
         chrome.tabs.create({ url: loginUrl });
     }
+    initializeNgramCache();
 });
+
+chrome.runtime.onStartup.addListener(() => {
+    initializeNgramCache();
+});
+
+// Pre-load dictionaries to avoid latency during analysis
+async function initializeNgramCache() {
+    const assets = ['turkish.txt', 'ngrams.txt'];
+    for (const asset of assets) {
+        try {
+            const url = chrome.runtime.getURL(asset);
+            const res = await fetch(url);
+            if (res.ok) {
+                ngramCache[asset] = await res.text();
+                console.log(`[Ghoti Background] Pre-loaded cache for: ${asset}`);
+            }
+        } catch (e) {
+            console.error(`[Ghoti Background] Failed to pre-load ${asset}:`, e);
+        }
+    }
+}
 
 /**
  * Clear auth state
@@ -811,6 +838,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ error: error.message });
             });
         return true;
+    }
+
+    if (request.type === 'GET_NGRAM_DATA') {
+        const cached = ngramCache[request.filename];
+        if (cached) {
+            sendResponse({ text: cached });
+            return false; // Sync response
+        }
+
+        const url = chrome.runtime.getURL(request.filename);
+        fetch(url)
+            .then(res => res.ok ? res.text() : Promise.reject(`Status ${res.status}`))
+            .then(text => {
+                ngramCache[request.filename] = text; // Cache it for next time
+                sendResponse({ text });
+            })
+            .catch(error => {
+                console.error(`[Ghoti Background] Failed to load ${request.filename}:`, error);
+                sendResponse({ error: error.toString() });
+            });
+        return true; // Async response
     }
 
     // Stats requests
@@ -1212,12 +1260,14 @@ async function handlePageAnalysis(data, tabId) {
     let domainInWhitelist = !domainIsExempt && await domainExistsInWhitelist(urlObj.hostname);
     if (domainInWhitelist) {
         console.log('[Ghoti Background] Domain in whitelist, skipping analysis:', urlObj.hostname);
-        return { success: true, whoisResult: null, queryResult: { finalRating: 0, response: "Domain is whitelisted." } };
+        const whitelistResult = { finalRating: 0, response: "Domain is whitelisted." };
+        return { success: true, whoisResult: null, queryResult: whitelistResult, localResult: whitelistResult };
     }
     let urlInWhitelist = await urlInWhiteList(url);
     if (urlInWhitelist) {
         console.log('[Ghoti Background] URL in whitelist, skipping analysis:', url);
-        return { success: true, whoisResult: null, queryResult: { finalRating: 0, response: "URL is whitelisted." } }
+        const whitelistResult = { finalRating: 0, response: "URL is whitelisted." };
+        return { success: true, whoisResult: null, queryResult: whitelistResult, localResult: whitelistResult };
     }
 
     // Check Persistent Cache
@@ -1517,7 +1567,7 @@ async function handlePageAnalysis(data, tabId) {
                 queryResult: { ...queryResult, source: "remote" },
                 localResult: {
                     finalRating: localSuspicion,
-                    response: localAnalysis.reasoning || "Local analysis result",
+                    response: localAnalysis.localResult?.response || "Local analysis result",
                     source: "local",
                     riskFactors: localAnalysis.riskFactors || [],
                     error: localAnalysis.error || null
@@ -1534,7 +1584,7 @@ async function handlePageAnalysis(data, tabId) {
             queryResult: { ...queryResult, source: "remote" },
             localResult: {
                 finalRating: localSuspicion,
-                response: localAnalysis.reasoning || "Local analysis result",
+                response: localAnalysis.localResult?.response || "Local analysis result",
                 source: "local",
                 riskFactors: localAnalysis.riskFactors || [],
                 error: localAnalysis.error || null
@@ -1570,7 +1620,7 @@ async function handlePageAnalysis(data, tabId) {
                 queryResult: null, // Remote failed
                 localResult: {
                     finalRating: localSuspicion,
-                    response: localAnalysis.reasoning || "Local analysis result",
+                    response: localAnalysis.localResult?.response || "Local analysis result",
                     source: "local-fallback",
                     error: localAnalysis.error || null
                 }
