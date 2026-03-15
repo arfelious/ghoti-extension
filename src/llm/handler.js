@@ -42,9 +42,68 @@ export function createLLMHandler(options = {}) {
     let inactivityTimer = null;
     const INACTIVITY_LIMIT = 30 * 60 * 1000; // 30 minutes in milliseconds
 
+    // Periodic engine reload to reclaim accumulated WebGPU VRAM fragments.
+    // After this many inferences the engine is fully unloaded and reloaded.
+    const RELOAD_AFTER_N_INFERENCES = 50;
+    let inferenceCount = 0;
+
     // Request queue for thread-safe sequential processing
     let requestQueue = [];
     let isProcessing = false;
+    let activeOllamaAbortController = null;
+    let lastErrorSource = null;
+    let lastErrorCode = null;
+    let lastErrorMessage = null;
+
+    function clearLastError() {
+        lastErrorSource = null;
+        lastErrorCode = null;
+        lastErrorMessage = null;
+    }
+
+    function setLastError(source, message, code = null) {
+        lastErrorSource = source || null;
+        lastErrorCode = code ?? null;
+        lastErrorMessage = message || null;
+    }
+
+    async function buildOllamaHttpError(response) {
+        let detail = '';
+        try {
+            detail = (await response.text()).trim();
+        } catch (_) {
+            // Ignore body read errors for error shaping
+        }
+
+        const preview = detail ? `: ${detail.slice(0, 240)}` : '';
+        const err = new Error(`Ollama API error (${response.status})${preview}`);
+        err.source = 'ollama';
+        err.code = response.status;
+        return err;
+    }
+
+    function getNormalizedOllamaEndpoint(settings) {
+        const rawEndpoint = (settings.ollamaEndpoint || '').trim() || DEFAULTS.ollamaEndpoint;
+        return rawEndpoint.replace(/\/+$/, '');
+    }
+
+    function getValidatedOllamaModel(settings) {
+        const model = (settings.ollamaModel || '').trim();
+        if (!model) {
+            const err = new Error('Ollama enabled but no model selected. Please choose a model in settings.');
+            err.source = 'ollama';
+            throw err;
+        }
+        return model;
+    }
+
+    function sendStreamMessage(sender, payload) {
+        if (sender?.tab?.id) {
+            chrome.tabs.sendMessage(sender.tab.id, payload).catch(() => { });
+            return;
+        }
+        runtime.sendMessage(payload).catch(() => { });
+    }
 
     /**
      * Get the model ID to use (from storage or default)
@@ -93,6 +152,14 @@ export function createLLMHandler(options = {}) {
      * @param {string} modelId - Optional model ID to load (uses selected or default if not provided)
      */
     async function initEngine(modelId = null) {
+        const settings = await chrome.storage.sync.get(DEFAULTS);
+        if (settings.ollamaEnabled) {
+            const model = getValidatedOllamaModel(settings);
+            status = LLM_STATUS.READY;
+            currentModelId = model;
+            clearLastError();
+            return;
+        }
         const targetModelId = modelId || await getModelIdToUse();
 
         // If already loaded with same model, skip
@@ -150,6 +217,7 @@ export function createLLMHandler(options = {}) {
             engine = await CreateMLCEngine(targetModelId, engineConfig);
 
             status = LLM_STATUS.READY;
+            clearLastError();
             resetInactivityTimer(); // Start/Reset timer when engine is ready
 
             runtime.sendMessage({
@@ -160,6 +228,7 @@ export function createLLMHandler(options = {}) {
         } catch (error) {
             status = LLM_STATUS.ERROR;
             currentModelId = null;
+            setLastError('web-llm', error?.message || 'Web-LLM init failed');
             console.error('[LLM Handler] Init error:', error);
             throw error;
         }
@@ -179,13 +248,28 @@ export function createLLMHandler(options = {}) {
         }
         status = LLM_STATUS.UNINITIALIZED;
         currentModelId = null;
+        clearLastError();
         chatHistory = [];
         loadProgress = 0;
+        inferenceCount = 0;
 
         if (inactivityTimer) {
             clearTimeout(inactivityTimer);
             inactivityTimer = null;
         }
+    }
+
+    /**
+     * Reload the engine to flush accumulated WebGPU VRAM fragments.
+     * Called automatically after every RELOAD_AFTER_N_INFERENCES inferences.
+     */
+    async function maybeReloadForVramReclaim() {
+        if (inferenceCount < RELOAD_AFTER_N_INFERENCES) return;
+        const modelToReload = currentModelId;
+        console.log(`[LLM Handler] Inference count reached ${RELOAD_AFTER_N_INFERENCES}. Reloading engine to reclaim VRAM...`);
+        await unloadEngine();
+        await initEngine(modelToReload);
+        console.log('[LLM Handler] Engine reloaded. VRAM reclaimed.');
     }
 
     /**
@@ -267,6 +351,54 @@ export function createLLMHandler(options = {}) {
      * Execute chat completion (internal, called by queue processor)
      */
     async function executeChat(message, options = {}) {
+        const settings = await chrome.storage.sync.get(DEFAULTS);
+        
+        if (settings.ollamaEnabled) {
+            status = LLM_STATUS.GENERATING;
+            const endpoint = getNormalizedOllamaEndpoint(settings);
+            const model = getValidatedOllamaModel(settings);
+            const abortController = new AbortController();
+            activeOllamaAbortController = abortController;
+            try {
+                const response = await fetch(`${endpoint}/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: abortController.signal,
+                    body: JSON.stringify({
+                        model,
+                        messages: [{ role: 'user', content: message }],
+                        stream: false,
+                        options: {
+                            temperature: options.temperature ?? 0.1,
+                            num_predict: options.max_tokens ?? 2048,
+                            stop: options.stop || []
+                        },
+                        format: options.response_format?.type === 'json_object' ? 'json' : undefined
+                    })
+                });
+
+                if (!response.ok) throw await buildOllamaHttpError(response);
+                const data = await response.json();
+                
+                status = LLM_STATUS.READY;
+                clearLastError();
+                return { content: data.message?.content || '' };
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    status = LLM_STATUS.READY;
+                    clearLastError();
+                    throw new Error('Generation aborted');
+                }
+                setLastError('ollama', error?.message || 'Ollama request failed', error?.code ?? null);
+                status = LLM_STATUS.ERROR;
+                throw error;
+            } finally {
+                if (activeOllamaAbortController === abortController) {
+                    activeOllamaAbortController = null;
+                }
+            }
+        }
+
         await initEngine();
         status = LLM_STATUS.GENERATING;
 
@@ -294,11 +426,15 @@ export function createLLMHandler(options = {}) {
                 }
             }
 
+            inferenceCount++;
             status = LLM_STATUS.READY;
+            clearLastError();
             resetInactivityTimer(); // Reset timer after each chat execution
+            await maybeReloadForVramReclaim();
             return { content: assistantMessage };
         } catch (error) {
             status = LLM_STATUS.ERROR;
+            setLastError('web-llm', error?.message || 'Web-LLM request failed');
             // Reset on error to recover
             chatHistory = [];
             if (engine) {
@@ -312,6 +448,125 @@ export function createLLMHandler(options = {}) {
      * Execute streaming chat completion (internal, called by queue processor)
      */
     async function executeChatStream(message, options = {}, streamId, sender) {
+        const settings = await chrome.storage.sync.get(DEFAULTS);
+
+        if (settings.ollamaEnabled) {
+            status = LLM_STATUS.GENERATING;
+            const endpoint = getNormalizedOllamaEndpoint(settings);
+            const model = getValidatedOllamaModel(settings);
+            const abortController = new AbortController();
+            activeOllamaAbortController = abortController;
+            try {
+                const response = await fetch(`${endpoint}/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: abortController.signal,
+                    body: JSON.stringify({
+                        model,
+                        messages: [{ role: 'user', content: message }],
+                        stream: true,
+                        options: {
+                            temperature: options.temperature ?? 0.1,
+                            num_predict: options.max_tokens ?? 2048,
+                            stop: options.stop || []
+                        },
+                        format: options.response_format?.type === 'json_object' ? 'json' : undefined
+                    })
+                });
+
+                if (!response.ok) throw await buildOllamaHttpError(response);
+                if (!response.body) throw new Error('Ollama API returned empty stream body');
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullContent = '';
+                let chunkBuffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    chunkBuffer += decoder.decode(value, { stream: true });
+                    const lines = chunkBuffer.split('\n');
+                    chunkBuffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine) continue;
+
+                        try {
+                            const data = JSON.parse(trimmedLine);
+                            const delta = data.message?.content || '';
+                            
+                            if (delta) {
+                                fullContent += delta;
+                                sendStreamMessage(sender, {
+                                    type: LLM_MESSAGE_TYPES.CHAT_STREAM_CHUNK,
+                                    streamId,
+                                    content: delta,
+                                });
+                            }
+
+                            if (data.done) {
+                                break;
+                            }
+                        } catch (e) {
+                            console.warn('[LLM Handler] Failed to parse Ollama chunk:', trimmedLine);
+                        }
+                    }
+                }
+
+                chunkBuffer += decoder.decode();
+                const trailing = chunkBuffer.trim();
+                if (trailing) {
+                    try {
+                        const data = JSON.parse(trailing);
+                        const delta = data.message?.content || '';
+                        if (delta) {
+                            fullContent += delta;
+                            sendStreamMessage(sender, {
+                                type: LLM_MESSAGE_TYPES.CHAT_STREAM_CHUNK,
+                                streamId,
+                                content: delta,
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('[LLM Handler] Failed to parse trailing Ollama chunk:', trailing);
+                    }
+                }
+
+                status = LLM_STATUS.READY;
+                clearLastError();
+                // Send end signal
+                sendStreamMessage(sender, { type: LLM_MESSAGE_TYPES.CHAT_STREAM_END, streamId });
+                return { success: true };
+            } catch (error) {
+                if (error?.name === 'AbortError' || error?.message === 'Generation aborted') {
+                    status = LLM_STATUS.READY;
+                    clearLastError();
+                    sendStreamMessage(sender, {
+                        type: LLM_MESSAGE_TYPES.ERROR,
+                        streamId,
+                        error: 'Generation aborted',
+                    });
+                    return { success: false, aborted: true };
+                }
+
+                setLastError('ollama', error?.message || 'Ollama streaming failed', error?.code ?? null);
+                status = LLM_STATUS.ERROR;
+                sendStreamMessage(sender, {
+                    type: LLM_MESSAGE_TYPES.ERROR,
+                    streamId,
+                    error: error?.message || 'Ollama streaming failed',
+                });
+                throw error;
+            } finally {
+                if (activeOllamaAbortController === abortController) {
+                    activeOllamaAbortController = null;
+                }
+            }
+        }
+
         await initEngine();
         status = LLM_STATUS.GENERATING;
 
@@ -373,11 +628,15 @@ export function createLLMHandler(options = {}) {
                 runtime.sendMessage(endMsg).catch(() => { });
             }
 
+            inferenceCount++;
             status = LLM_STATUS.READY;
+            clearLastError();
             resetInactivityTimer();
+            await maybeReloadForVramReclaim();
             return { success: true };
         } catch (error) {
             status = LLM_STATUS.ERROR;
+            setLastError('web-llm', error?.message || 'Web-LLM streaming failed');
             throw error;
         }
     }
@@ -405,18 +664,28 @@ export function createLLMHandler(options = {}) {
 
                 case LLM_MESSAGE_TYPES.ABORT:
                     // ABORT is one of the few messages that should interrupt immediately if possible
+                    if (activeOllamaAbortController) {
+                        activeOllamaAbortController.abort();
+                        activeOllamaAbortController = null;
+                    }
                     if (engine) {
                         await engine.interruptGenerate();
                     }
                     status = LLM_STATUS.READY;
+                    clearLastError();
                     return { success: true };
 
                 case LLM_MESSAGE_TYPES.GET_STATUS:
+                    const settings = await chrome.storage.sync.get(DEFAULTS);
                     return {
                         status,
-                        loadProgress,
-                        modelId: currentModelId || config.modelId,
+                        loadProgress: settings.ollamaEnabled ? 1 : loadProgress,
+                        modelId: settings.ollamaEnabled ? (settings.ollamaModel || 'Ollama') : (currentModelId || config.modelId),
                         historyLength: chatHistory.length,
+                        engine: settings.ollamaEnabled ? 'Ollama' : 'Web-LLM',
+                        errorSource: lastErrorSource,
+                        errorCode: lastErrorCode,
+                        errorMessage: lastErrorMessage,
                     };
 
                 // Model Management

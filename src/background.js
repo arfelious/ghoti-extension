@@ -61,6 +61,9 @@ const lastScannedUrl = new Map();
 // TrackTabs that need scanning but wasn't ready to receive START_SCAN
 const pendingScans = new Map();
 
+// Debounce timers for same-domain navigations (tabId -> timeoutId)
+const sameDomainDebounceTimers = new Map();
+
 // LRU Cache Limits
 const DECISION_CACHE_LIMIT = 1000;
 const DETAILED_CACHE_LIMIT = 200;
@@ -1456,7 +1459,11 @@ async function handlePageAnalysis(data, tabId) {
         // Reuse the WHOIS data we already fetched for local analysis
         const whoisResult = whoisData;
         const queryPromise = new Promise((resolve, reject) => {
-            const ws = new WebSocket(REMOTE_QUERY_WS);
+            // Browser WS API doesn't support custom headers; pass token as query param
+            const wsUrl = AUTH_TOKEN
+                ? `${REMOTE_QUERY_WS}?token=${encodeURIComponent(AUTH_TOKEN)}`
+                : REMOTE_QUERY_WS;
+            const ws = new WebSocket(wsUrl);
             let connectionEstablished = false;
 
             ws.onopen = () => {
@@ -1730,21 +1737,45 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         }
 
         if (settings.isActive) {
-            console.log(`[Ghoti Background] Navigation detected on tab ${tabId} (URL: ${tab.url}), triggering scan...`);
+            const newUrl = tab.url;
 
-            // Try sending immediately. If it fails, inject.js will send CONTENT_SCRIPT_READY later
-            chrome.tabs.sendMessage(tabId, {
-                type: 'START_SCAN',
-                scanId: generateScanId()
-            }).then(() => {
-                // Success - script was already there
-                lastScannedUrl.set(tabId, tab.url);
-                pendingScans.delete(tabId);
-            }).catch(() => {
-                // Failed - script not injected yet. Add to pending scans so CONTENT_SCRIPT_READY will handle it.
-                pendingScans.set(tabId, tab.url);
-                console.log(`[Ghoti Background] Tab ${tabId} not ready, queued in pendingScans to wait for CONTENT_SCRIPT_READY`);
-            });
+            // Determine if this is a same-domain navigation
+            let isSameDomain = false;
+            const lastUrl = lastScannedUrl.get(tabId);
+            if (lastUrl) {
+                try {
+                    isSameDomain = new URL(lastUrl).hostname === new URL(newUrl).hostname;
+                } catch (e) { /* ignore malformed URLs */ }
+            }
+
+            // Helper that actually fires the scan
+            const fireScan = () => {
+                sameDomainDebounceTimers.delete(tabId);
+                console.log(`[Ghoti Background] Navigation detected on tab ${tabId} (URL: ${newUrl}), triggering scan...`);
+                chrome.tabs.sendMessage(tabId, {
+                    type: 'START_SCAN',
+                    scanId: generateScanId()
+                }).then(() => {
+                    lastScannedUrl.set(tabId, newUrl);
+                    pendingScans.delete(tabId);
+                }).catch(() => {
+                    pendingScans.set(tabId, newUrl);
+                    console.log(`[Ghoti Background] Tab ${tabId} not ready, queued in pendingScans to wait for CONTENT_SCRIPT_READY`);
+                });
+            };
+
+            if (isSameDomain) {
+                // Cancel any existing debounce for this tab and restart the 3s timer
+                const existing = sameDomainDebounceTimers.get(tabId);
+                if (existing) clearTimeout(existing);
+                console.log(`[Ghoti Background] Same-domain navigation on tab ${tabId}, debouncing scan by 3s...`);
+                sameDomainDebounceTimers.set(tabId, setTimeout(fireScan, 3000));
+            } else {
+                // New domain — cancel any pending same-domain debounce and scan immediately
+                const existing = sameDomainDebounceTimers.get(tabId);
+                if (existing) { clearTimeout(existing); sameDomainDebounceTimers.delete(tabId); }
+                fireScan();
+            }
         }
     }
 });
@@ -1752,6 +1783,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 // Clean up tracking when tabs are closed
 chrome.tabs.onRemoved.addListener((tabId) => {
     lastScannedUrl.delete(tabId);
+    pendingScans.delete(tabId);
+    const timer = sameDomainDebounceTimers.get(tabId);
+    if (timer) { clearTimeout(timer); sameDomainDebounceTimers.delete(tabId); }
 });
 
 // Initialize LLM and Session on boot

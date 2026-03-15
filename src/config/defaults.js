@@ -29,6 +29,11 @@ export const DEFAULTS = {
     useCustomFallbackThreshold: false,    // Use a separate threshold when server is unavailable
     localFallbackThreshold: 60,           // Custom threshold for local-fallback decisions (0-100)
 
+    // Ollama
+    ollamaEnabled: false,                 // Use Ollama instead of Web-LLM
+    ollamaEndpoint: 'http://localhost:11434',
+    ollamaModel: '',
+
     // Testing/Development
     compareMode: false,                   // Run both local and remote for comparison
 

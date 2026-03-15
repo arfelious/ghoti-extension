@@ -6,6 +6,21 @@ import { DEFAULTS } from './config/defaults.js';
 let llm = null;
 let allLogs = []; // Buffer to store all logs for filtering
 
+function getConfiguredOllamaEndpoint() {
+    const endpointInput = document.getElementById('ollamaEndpoint');
+    const endpoint = endpointInput?.value?.trim() || '';
+    return endpoint || DEFAULTS.ollamaEndpoint;
+}
+
+function setOllamaAdvancedVisible(visible) {
+    const advancedSection = document.getElementById('ollamaAdvancedSection');
+    const toggleBtn = document.getElementById('toggleOllamaAdvancedBtn');
+    if (!advancedSection || !toggleBtn) return;
+
+    advancedSection.classList.toggle('collapsed', !visible);
+    toggleBtn.textContent = visible ? 'Gelişmiş Ayarları Gizle' : 'Gelişmiş Endpoint Ayarı';
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     llm = new LLMAdapter({
         onStatusChange: updateModelStatus,
@@ -41,6 +56,15 @@ async function loadSettings() {
     document.getElementById('fallbackThresholdSlider').value = settings.localFallbackThreshold;
     document.getElementById('fallbackThresholdVal').textContent = settings.localFallbackThreshold;
     updateFallbackSliderState();
+
+    // Ollama settings
+    document.getElementById('ollamaEnabled').checked = settings.ollamaEnabled;
+    document.getElementById('ollamaEndpoint').value = (settings.ollamaEndpoint || DEFAULTS.ollamaEndpoint).trim();
+    setOllamaAdvancedVisible(false);
+    updateOllamaUIState();
+    if (settings.ollamaEnabled) {
+        await fetchOllamaModels();
+    }
 }
 
 function updateBlockWarning() {
@@ -59,6 +83,58 @@ function updateFallbackSliderState() {
     const sliderGroup = document.querySelector('#fallbackSliderRow .slider-group-settings');
     if (sliderGroup) {
         sliderGroup.classList.toggle('disabled', !enabled);
+    }
+}
+
+function updateOllamaUIState() {
+    const enabled = document.getElementById('ollamaEnabled').checked;
+    const section = document.getElementById('ollamaSettingsSection');
+    const mlcCard = document.querySelector('#model-tab .card:first-child');
+    const mlcPresetsCard = document.querySelector('#model-tab .card:nth-child(2)');
+    const mlcCustomCard = document.querySelector('#model-tab .card:nth-child(3)');
+
+    if (section) section.style.opacity = enabled ? '1' : '0.5';
+    if (section) section.style.pointerEvents = enabled ? 'all' : 'none';
+
+    // Dim MLC sections if Ollama is enabled
+    if (mlcCard) mlcCard.style.opacity = enabled ? '0.5' : '1';
+    if (mlcPresetsCard) mlcPresetsCard.style.opacity = enabled ? '0.5' : '1';
+    if (mlcCustomCard) mlcCustomCard.style.opacity = enabled ? '0.5' : '1';
+}
+
+async function fetchOllamaModels() {
+    const endpoint = getConfiguredOllamaEndpoint();
+    const select = document.getElementById('ollamaModelSelect');
+    const btn = document.getElementById('ollamaRefreshModelsBtn');
+
+    try {
+        btn.disabled = true;
+        btn.textContent = '...';
+
+        const response = await fetch(`${endpoint}/api/tags`);
+        if (!response.ok) throw new Error('Ollama API error');
+
+        const data = await response.json();
+        const models = data.models || [];
+
+        const settings = await chrome.storage.sync.get('ollamaModel');
+
+        select.innerHTML = models.length > 0 
+            ? models.map(m => `<option value="${m.name}" ${m.name === settings.ollamaModel ? 'selected' : ''}>${m.name}</option>`).join('')
+            : '<option value="">Model bulunamadı</option>';
+
+        if (models.length > 0 && !select.value) {
+            // Auto-select first model if none selected
+            await chrome.storage.sync.set({ ollamaModel: models[0].name });
+        }
+
+    } catch (e) {
+        console.error('[Settings] Ollama fetch error:', e);
+        select.innerHTML = '<option value="">Hata: Bağlantı kurulamadı</option>';
+        showStatus('Ollama bağlantı hatası', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Modelleri Getir';
     }
 }
 
@@ -306,6 +382,34 @@ function setupEventListeners() {
         }
     });
 
+    // Ollama events
+    document.getElementById('ollamaEnabled').addEventListener('change', async (e) => {
+        const enabled = e.target.checked;
+        await chrome.storage.sync.set({ ollamaEnabled: enabled });
+        updateOllamaUIState();
+        if (enabled) {
+            await fetchOllamaModels();
+        }
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('ollamaEndpoint').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ ollamaEndpoint: e.target.value.trim() });
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('ollamaModelSelect').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ ollamaModel: e.target.value });
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('ollamaRefreshModelsBtn').addEventListener('click', fetchOllamaModels);
+    document.getElementById('toggleOllamaAdvancedBtn').addEventListener('click', () => {
+        const advancedSection = document.getElementById('ollamaAdvancedSection');
+        const isCollapsed = advancedSection?.classList.contains('collapsed');
+        setOllamaAdvancedVisible(isCollapsed);
+    });
+
     // Log controls
     document.getElementById('clearLogsBtn').addEventListener('click', () => {
         allLogs = [];
@@ -464,7 +568,7 @@ async function loadModelInfo() {
             <div class="model-status">
                 <p><strong>Aktif Model:</strong> ${status.modelId || 'Yüklü model yok'}</p>
                 <p><strong>Durum:</strong> <span class="status-badge ${statusClass}">${statusLabels[status.status] || status.status}</span></p>
-                <p><strong>Motor:</strong> Web-LLM (MLC)</p>
+                <p><strong>Motor:</strong> ${status.engine === 'Ollama' ? 'Ollama' : 'Web-LLM (MLC)'}</p>
             </div>
         `;
     } catch (e) {

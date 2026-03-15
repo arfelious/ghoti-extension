@@ -91,7 +91,7 @@ export class LLMAdapter {
                 chunks.push(msg.content);
             } else if (msg.type === LLM_MESSAGE_TYPES.CHAT_STREAM_END) {
                 done = true;
-            } else if (msg.type === 'LLM_ERROR') {
+            } else if (msg.type === LLM_MESSAGE_TYPES.ERROR) {
                 error = new Error(msg.error);
                 done = true;
             }

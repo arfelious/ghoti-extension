@@ -649,3 +649,17 @@ select:focus {
   color: var(--danger);
   background: rgba(248, 113, 113, 0.15);
 }
+
+.ollama-advanced {
+  overflow: hidden;
+  transition: max-height var(--transition), opacity var(--transition), margin-bottom var(--transition);
+  max-height: 220px;
+  opacity: 1;
+  margin-bottom: 6px;
+}
+
+.ollama-advanced.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+}

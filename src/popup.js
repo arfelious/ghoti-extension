@@ -470,8 +470,11 @@ async function updateLLMStatus() {
             // Update status with color coding — respect sticky download session
             statusEl.textContent = (response.status === 'loading' && isDownloadingSession)
                 ? 'İndiriliyor...'
-                : formatStatus(response.status);
+                : formatStatus(response.status, response);
             statusEl.className = 'status-value ' + response.status;
+            statusEl.title = response.status === 'error' && response.errorMessage
+                ? response.errorMessage
+                : (response.engine || '');
 
             // Update model name (truncate if too long)
             if (response.modelId) {
@@ -512,7 +515,7 @@ function updateProgressBar(progress, status) {
 /**
  * Format status for display
  */
-function formatStatus(status) {
+function formatStatus(status, response = {}) {
     const statusMap = {
         'uninitialized': 'Başlatılmadı',
         'loading': 'Yükleniyor...',
@@ -520,7 +523,23 @@ function formatStatus(status) {
         'generating': 'Üretiliyor...',
         'error': 'Hata'
     };
-    return statusMap[status] || status;
+    const baseStatus = statusMap[status] || status;
+
+    if (status === 'error') {
+        if (response.errorSource === 'ollama') {
+            return response.errorCode ? `Hata (Ollama ${response.errorCode})` : 'Hata (Ollama)';
+        }
+        if (response.errorSource === 'web-llm') {
+            return 'Hata (Web-LLM)';
+        }
+        return baseStatus;
+    }
+
+    if (response.engine === 'Ollama') {
+        return `${baseStatus} (Ollama)`;
+    }
+
+    return baseStatus;
 }
 
 /**
@@ -572,7 +591,10 @@ function updateModelOutput(result, domain = null, autoSwitch = false) {
             const rating = sourceData.finalRating !== undefined ? `Risk: %${sourceData.finalRating}\n\n` : "";
             const domainHeader = domain ? `${domain}\n-------------------\n` : "";
             const sourceLabel = sourceData.isCached ? " (Önbellek)" : "";
-            const prefix = currentOutputSource === 'remote' ? `GENEL ANALİZ${sourceLabel}:\n` : `YEREL ANALİZ${sourceLabel}:\n`;
+            const llmLabel = (currentOutputSource === 'remote' && sourceData.llmSource)
+                ? (sourceData.llmSource === 'external' ? ' · Gemini' : ' · Ollama')
+                : '';
+            const prefix = currentOutputSource === 'remote' ? `GENEL ANALİZ${sourceLabel}${llmLabel}:\n` : `YEREL ANALİZ${sourceLabel}:\n`;
             content = response ? `${domainHeader}${prefix}${rating}${response}` : null;
         }
 
