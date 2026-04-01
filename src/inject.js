@@ -175,6 +175,8 @@ function injectToolbar(probability, scanId = null) {
   // Show different message based on whether probability is provided
   if (probability === 'known_phishing') {
     toolbar.textContent = '🚨 UYARI: Bu site daha önceki analizlerde oltalama (phishing) olarak tespit edilmiştir. İnceleme bitene kadar kişisel bilgilerinizi girmeyin!';
+  } else if (probability === 'local_escalation') {
+    toolbar.textContent = '🚨 UYARI: Yerel AI sayfada sakıncalı olabilecek unsurlar buldu. Analiz tamamlanana kadar herhangi bir kişisel bilgi girmeyin.';
   } else if (probability === null) {
     toolbar.textContent = '🚨 UYARI: Bu site tehlikeli olabilir! Kişisel bilgilerinizi girmeyin.';
   } else if (probability === undefined) {
@@ -210,7 +212,13 @@ function injectToolbar(probability, scanId = null) {
   }
 }
 
-async function analyzePage(scanId = null) {
+async function analyzePage(scanId = null, forceRemote = false) {
+  if (window.GHOTI_IS_ANALYZING) {
+    console.log('[Ghoti] Analysis already in progress, skipping duplicate Request.');
+    return;
+  }
+  window.GHOTI_IS_ANALYZING = true;
+
   // If scanId is provided, track it as the active scan for this window
   if (scanId) {
     window[ACTIVE_SCAN_ID] = scanId;
@@ -241,9 +249,8 @@ async function analyzePage(scanId = null) {
     }
   }
 
-  const THRESHOLD = settings.globalThreshold;
-
   // Initialize parsers and extract page data
+  const extractionStart = performance.now();
   await initParsers();
   const html = document.documentElement.outerHTML;
   const extractedData = await extractPageData(document, html, window.location.href, {
@@ -253,6 +260,7 @@ async function analyzePage(scanId = null) {
     extractRisk: true,
     maxTextLength: 2000
   });
+  const extractionEnd = performance.now();
 
   console.log('[Ghoti] Extracted data:', extractedData);
 
@@ -265,12 +273,21 @@ async function analyzePage(scanId = null) {
   };
 
   // If sendPageContent is enabled, include sanitized DOM
+  let serialization_ms = 0;
   if (settings.sendPageContent) {
     console.log('[Ghoti] Serializing page content for analysis...');
+    const serializationStart = performance.now();
     messageData.pageContent = serializeDomSanitized();
+    serialization_ms = performance.now() - serializationStart;
     messageData.sendPageContent = true;
     console.log('[Ghoti] Page content size:', (messageData.pageContent.length / 1024).toFixed(1), 'KB');
   }
+
+  // Add timings
+  messageData.timings = {
+    extraction_ms: extractionEnd - extractionStart,
+    serialization_ms: serialization_ms
+  };
 
   if (messageData.automatedMode) {
     console.log('[Ghoti] Running in automated mode (Puppeteer) - compareMode enabled');
@@ -278,8 +295,10 @@ async function analyzePage(scanId = null) {
 
   chrome.runtime.sendMessage({
     type: 'ANALYZE_PAGE',
-    data: { ...messageData, scanId }
+    data: { ...messageData, scanId, forceRemote }
   }, response => {
+    window.GHOTI_IS_ANALYZING = false;
+    
     if (chrome.runtime.lastError) {
       console.error('[Ghoti] Communication error:', chrome.runtime.lastError);
       return;
@@ -331,8 +350,8 @@ async function analyzePage(scanId = null) {
         console.log('[Ghoti] No remote result, using local rating:', rating);
       }
 
-      const isSuspicious = rating > THRESHOLD;
-      console.log('[Ghoti] Final rating:', rating, '| Threshold:', THRESHOLD, '| Suspicious:', isSuspicious);
+      const isSuspicious = rating > settings.globalThreshold;
+      console.log('[Ghoti] Final rating:', rating, '| Threshold:', settings.globalThreshold, '| Suspicious:', isSuspicious);
 
       // Input blocking logic based on verdict
       if (settings.blockUntilScanned) {
@@ -387,11 +406,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     removeToolbar();
 
     // Analyze
-    analyzePage(incomingScanId);
+    analyzePage(incomingScanId, request.forceRemote);
     sendResponse({ success: true });
   } else if (request.type === 'SHOW_EARLY_WARNING') {
     const incomingScanId = request.scanId;
-    injectToolbar('known_phishing', incomingScanId);
+    const probability = request.probability !== undefined ? request.probability : 'known_phishing';
+    injectToolbar(probability, incomingScanId);
     sendResponse({ success: true });
   } else if (request.type === 'GET_SCAN_RESULT') {
     // Return the result stored in the data attribute

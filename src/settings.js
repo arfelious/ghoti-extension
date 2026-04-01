@@ -44,6 +44,7 @@ async function loadSettings() {
     document.getElementById('scanOnSpaNavigation').checked = settings.scanOnSpaNavigation;
     document.getElementById('unloadAfterInactivity').checked = settings.unloadAfterInactivity;
     document.getElementById('uploadLocalResults').checked = settings.uploadLocalResults;
+    document.getElementById('showEarlyWarningOnLocalEscalation').checked = settings.showEarlyWarningOnLocalEscalation;
     document.getElementById('maxLogs').value = settings.maxLogs;
 
     // Block settings
@@ -60,8 +61,21 @@ async function loadSettings() {
     // Ollama settings
     document.getElementById('ollamaEnabled').checked = settings.ollamaEnabled;
     document.getElementById('ollamaEndpoint').value = (settings.ollamaEndpoint || DEFAULTS.ollamaEndpoint).trim();
+
+    // OpenAI settings
+    document.getElementById('openaiEnabled').checked = settings.openaiEnabled;
+    document.getElementById('openaiEndpoint').value = (settings.openaiEndpoint || DEFAULTS.openaiEndpoint).trim();
+    document.getElementById('openaiModel').value = (settings.openaiModel || '').trim();
+    document.getElementById('openaiApiKeyEnabled').checked = settings.openaiApiKeyEnabled;
+
+    // Load locally stored API key
+    const localData = await chrome.storage.local.get('openaiApiKey');
+    if (localData.openaiApiKey) {
+        document.getElementById('openaiApiKey').value = localData.openaiApiKey;
+    }
+
     setOllamaAdvancedVisible(false);
-    updateOllamaUIState();
+    updateLLMUIState();
     if (settings.ollamaEnabled) {
         await fetchOllamaModels();
     }
@@ -86,20 +100,53 @@ function updateFallbackSliderState() {
     }
 }
 
-function updateOllamaUIState() {
-    const enabled = document.getElementById('ollamaEnabled').checked;
-    const section = document.getElementById('ollamaSettingsSection');
-    const mlcCard = document.querySelector('#model-tab .card:first-child');
-    const mlcPresetsCard = document.querySelector('#model-tab .card:nth-child(2)');
-    const mlcCustomCard = document.querySelector('#model-tab .card:nth-child(3)');
+function updateLLMUIState() {
+    const ollamaEnabled = document.getElementById('ollamaEnabled').checked;
+    const openaiEnabled = document.getElementById('openaiEnabled').checked;
+    const anyExternalLLM = ollamaEnabled || openaiEnabled;
+    
+    // External provider sections
+    const ollamaSection = document.getElementById('ollamaSettingsSection');
+    const openaiSection = document.getElementById('openaiSettingsSection');
+    
+    // Main cards
+    const mlcActiveCard = document.getElementById('mlcActiveCard');
+    const mlcPresetsCard = document.getElementById('mlcPresetsCard');
+    const mlcCustomCard = document.getElementById('mlcCustomCard');
 
-    if (section) section.style.opacity = enabled ? '1' : '0.5';
-    if (section) section.style.pointerEvents = enabled ? 'all' : 'none';
+    // Update visibility for external provider settings content
+    if (ollamaSection) {
+        ollamaSection.classList.toggle('disabled-section', !ollamaEnabled);
+    }
+    if (openaiSection) {
+        openaiSection.classList.toggle('disabled-section', !openaiEnabled);
+    }
 
-    // Dim MLC sections if Ollama is enabled
-    if (mlcCard) mlcCard.style.opacity = enabled ? '0.5' : '1';
-    if (mlcPresetsCard) mlcPresetsCard.style.opacity = enabled ? '0.5' : '1';
-    if (mlcCustomCard) mlcCustomCard.style.opacity = enabled ? '0.5' : '1';
+    // Handle OpenAI API Key visibility/interactivity
+    const apiKeyEnabled = document.getElementById('openaiApiKeyEnabled').checked;
+    const apiKeyInput = document.getElementById('openaiApiKey');
+    if (apiKeyInput) {
+        apiKeyInput.disabled = !apiKeyEnabled || !openaiEnabled;
+        apiKeyInput.style.opacity = (apiKeyEnabled && openaiEnabled) ? '1' : '0.5';
+    }
+
+    // Only dim the Active Model card if using external LLM
+    if (mlcActiveCard) {
+        mlcActiveCard.classList.toggle('disabled-section', anyExternalLLM);
+    }
+
+    // Explicitly ENSURE other cards are NOT dimmed
+    if (mlcPresetsCard) mlcPresetsCard.classList.remove('disabled-section');
+    if (mlcCustomCard) mlcCustomCard.classList.remove('disabled-section');
+    
+    // Reset any ad-hoc opacity/pointerEvents styles from older versions
+    const allCards = document.querySelectorAll('#model-tab .card');
+    allCards.forEach(card => {
+        if (card.id !== 'mlcActiveCard') {
+            card.style.opacity = '';
+            card.style.pointerEvents = '';
+        }
+    });
 }
 
 async function fetchOllamaModels() {
@@ -289,6 +336,11 @@ function setupEventListeners() {
         showStatus('Ayarlar kaydedildi');
     });
 
+    document.getElementById('showEarlyWarningOnLocalEscalation').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ showEarlyWarningOnLocalEscalation: e.target.checked });
+        showStatus('Ayarlar kaydedildi');
+    });
+
     // Block settings
     document.getElementById('blockUntilScanned').addEventListener('change', async (e) => {
         await chrome.storage.sync.set({ blockUntilScanned: e.target.checked });
@@ -385,8 +437,12 @@ function setupEventListeners() {
     // Ollama events
     document.getElementById('ollamaEnabled').addEventListener('change', async (e) => {
         const enabled = e.target.checked;
+        if (enabled) {
+            document.getElementById('openaiEnabled').checked = false;
+            await chrome.storage.sync.set({ openaiEnabled: false });
+        }
         await chrome.storage.sync.set({ ollamaEnabled: enabled });
-        updateOllamaUIState();
+        updateLLMUIState();
         if (enabled) {
             await fetchOllamaModels();
         }
@@ -408,6 +464,39 @@ function setupEventListeners() {
         const advancedSection = document.getElementById('ollamaAdvancedSection');
         const isCollapsed = advancedSection?.classList.contains('collapsed');
         setOllamaAdvancedVisible(isCollapsed);
+    });
+
+    // OpenAI events
+    document.getElementById('openaiEnabled').addEventListener('change', async (e) => {
+        const enabled = e.target.checked;
+        if (enabled) {
+            document.getElementById('ollamaEnabled').checked = false;
+            await chrome.storage.sync.set({ ollamaEnabled: false });
+        }
+        await chrome.storage.sync.set({ openaiEnabled: enabled });
+        updateLLMUIState();
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('openaiEndpoint').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ openaiEndpoint: e.target.value.trim() });
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('openaiModel').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ openaiModel: e.target.value.trim() });
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('openaiApiKeyEnabled').addEventListener('change', async (e) => {
+        await chrome.storage.sync.set({ openaiApiKeyEnabled: e.target.checked });
+        updateLLMUIState();
+        showStatus('Ayarlar kaydedildi');
+    });
+
+    document.getElementById('openaiApiKey').addEventListener('change', async (e) => {
+        await chrome.storage.local.set({ openaiApiKey: e.target.value.trim() });
+        showStatus('API anahtarı yerel olarak kaydedildi');
     });
 
     // Log controls

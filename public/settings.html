@@ -91,6 +91,17 @@
                         <span class="slider"></span>
                     </label>
                 </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <span class="setting-name">Erken Uyarı Göster</span>
+                        <div class="setting-desc">Yerel AI bir tehdit algılayıp sunucudan kesin sonuç beklerken geçici bir uyarı gösterir.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="showEarlyWarningOnLocalEscalation">
+                        <span class="slider"></span>
+                    </label>
+                </div>
             </div>
 
             <div class="card">
@@ -167,7 +178,7 @@
 
         <!-- Model Tab -->
         <main id="model-tab" class="tab-content">
-            <div class="card">
+            <div class="card" id="mlcActiveCard">
                 <h2>🤖 Aktif Model</h2>
                 <div id="modelInfo">Yükleniyor...</div>
 
@@ -193,7 +204,7 @@
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card" id="ollamaCard">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <h2 style="margin-bottom: 0;">🦙 Ollama Ayarları</h2>
                     <label class="switch">
@@ -234,14 +245,57 @@
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card" id="openaiCard">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin-bottom: 0;">🌐 OpenAI Uyumlu API</h2>
+                    <label class="switch">
+                        <input type="checkbox" id="openaiEnabled">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div id="openaiSettingsSection" class="openai-settings">
+                    <div class="form-group">
+                        <label for="openaiEndpoint">API Endpoint:</label>
+                        <input type="text" id="openaiEndpoint" placeholder="https://api.openai.com/v1" style="flex: 1;">
+                        <div class="setting-desc" style="margin-top: 8px;">
+                            Örn: https://api.openai.com/v1 veya kendi sunucunuz.
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="openaiModel">Model Adı:</label>
+                        <input type="text" id="openaiModel" placeholder="gpt-4o, llama3, vb." style="flex: 1;">
+                    </div>
+
+                    <div class="setting-row" style="padding: 0; margin-top: 15px;">
+                        <div class="setting-info">
+                            <span class="setting-name">API Anahtarı Kullan</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="openaiApiKeyEnabled">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 10px;">
+                        <label for="openaiApiKey">API Anahtarı:</label>
+                        <input type="password" id="openaiApiKey" placeholder="sk-..." style="flex: 1;">
+                        <div class="setting-desc" style="margin-top: 8px; font-style: italic; color: var(--text-muted);">
+                            ℹ️ API anahtarı sadece tarayıcınızda yerel olarak saklanır.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" id="mlcPresetsCard">
                 <h2>📦 Hazır Modeller</h2>
                 <div class="preset-models-list model-grid" id="presetModelsList">
                     <!-- Populated by JS -->
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card" id="mlcCustomCard">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <h2 style="margin-bottom: 0;">🧩 Özel Modeller</h2>
                     <button id="toggleCustomFormBtn" class="fab-btn" title="Özel Model Ekle">➕</button>

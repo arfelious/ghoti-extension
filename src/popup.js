@@ -671,7 +671,7 @@ async function rescanPage() {
         document.getElementById('page-status').className = 'status-value loading';
 
         // Send message to content script to trigger rescan
-        await chrome.tabs.sendMessage(tab.id, { type: 'RESCAN_PAGE' });
+        await chrome.tabs.sendMessage(tab.id, { type: 'RESCAN_PAGE', forceRemote: true });
         // Status will be updated to 'Tamamlandı' when SCAN_COMPLETE message arrives
 
     } catch (error) {

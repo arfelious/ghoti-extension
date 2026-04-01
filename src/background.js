@@ -1,3 +1,17 @@
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async function (url, options) {
+    console.log('[Ghoti SW Fetch]', url);
+    try {
+        const res = await originalFetch(url, options);
+        console.log('[Ghoti SW Fetch Success]', url, res.status);
+        return res;
+    } catch (e) {
+        console.error('[Ghoti SW Fetch Error]', url, e.message);
+        throw e;
+    }
+};
+
 const REMOTE_INIT = "http://localhost:9701/extension-init";
 const REMOTE_QUERY = "http://localhost:9701/query";
 const REMOTE_QUERY_WS = "ws://localhost:9701/query";
@@ -57,6 +71,24 @@ const backgroundInitPromise = new Promise(resolve => {
 
 // Track last scanned URL per tab to prevent duplicate scans
 const lastScannedUrl = new Map();
+
+// Track main document ETag for cloaking detection (tabId -> etag)
+const tabEtags = new Map();
+
+chrome.webRequest.onHeadersReceived.addListener(
+    (details) => {
+        if (details.type === 'main_frame') {
+            const etagHeader = details.responseHeaders.find(h => h.name.toLowerCase() === 'etag');
+            if (etagHeader) {
+                tabEtags.set(details.tabId, etagHeader.value);
+            } else {
+                tabEtags.delete(details.tabId);
+            }
+        }
+    },
+    { urls: ['<all_urls>'], types: ['main_frame'] },
+    ['responseHeaders']
+);
 
 // TrackTabs that need scanning but wasn't ready to receive START_SCAN
 const pendingScans = new Map();
@@ -188,17 +220,17 @@ function generateScanId() {
  */
 function updateBadge(tabId, count, isScanning) {
     if (isScanning) {
-        chrome.action.setBadgeText({ tabId, text: "..." });
-        chrome.action.setBadgeBackgroundColor({ tabId, color: "#6B7280" }); // Grey
+        chrome.action.setBadgeText({ tabId, text: "..." }).catch(() => { });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: "#6B7280" }).catch(() => { }); // Grey
         return;
     }
 
     if (count > 0) {
-        chrome.action.setBadgeText({ tabId, text: count.toString() });
+        chrome.action.setBadgeText({ tabId, text: count.toString() }).catch(() => { });
         // Set color based on risk level if we have a threshold, but for now red/orange
-        chrome.action.setBadgeBackgroundColor({ tabId, color: count > 3 ? "#F87171" : "#FBBF24" }); // Red or Orange
+        chrome.action.setBadgeBackgroundColor({ tabId, color: count > 3 ? "#F87171" : "#FBBF24" }).catch(() => { }); // Red or Orange
     } else {
-        chrome.action.setBadgeText({ tabId, text: "" });
+        chrome.action.setBadgeText({ tabId, text: "" }).catch(() => { });
     }
 }
 
@@ -639,53 +671,45 @@ async function getStats() {
     };
 }
 
-async function updateStats(update) {
+async function updateStats(data) {
     const stats = await getStats();
 
-    if (update.scan) {
-        stats.totalScans++;
-        stats.lastScan = new Date().toISOString();
+    const newStats = {
+        ...stats,
+        resultsUploaded: stats.resultsUploaded || 0,
+        recentScans: (stats.recentScans || []).slice(0, 100) // Keep last 100
+    };
 
-        // Add to recent scans
-        stats.recentScans.unshift({
-            domain: update.scan.domain,
-            url: update.scan.url,
-            confidence: update.scan.confidence, // Primary confidence (remote if available)
-            localConfidence: update.scan.localConfidence || null,
-            remoteConfidence: update.scan.remoteConfidence || null,
-            isPhishing: update.scan.isPhishing,
-            source: update.scan.source,
-            timestamp: stats.lastScan
-        });
-
-        // Keep only last 50
-        if (stats.recentScans.length > 50) {
-            stats.recentScans = stats.recentScans.slice(0, 50);
-        }
-
-        if (update.scan.source === 'local') {
-            stats.localAnalyses++;
+    if (data.scan) {
+        newStats.totalScans++;
+        newStats.lastScan = new Date().toISOString();
+        if (data.scan.isPhishing) {
+            newStats.phishingDetected++;
         } else {
-            stats.remoteAnalyses++;
+            newStats.safeDetected++;
         }
+        if (data.scan.source === 'local') newStats.localAnalyses++;
+        if (data.scan.source === 'remote') newStats.remoteAnalyses++;
 
-        if (update.scan.isPhishing) {
-            stats.phishingDetected++;
-        } else {
-            stats.safeDetected++;
-        }
+        // Add with total duration if available
+        const recentScanEntry = {
+            ...data.scan,
+            timestamp: Date.now(),
+            total_ms: data.timings?.total_ms || 0
+        };
+        newStats.recentScans.unshift(recentScanEntry);
     }
 
-    if (update.uploaded) {
-        stats.resultsUploaded++;
+    if (data.uploaded) {
+        newStats.resultsUploaded++;
     }
 
-    await chrome.storage.local.set({ [STATS_KEY]: stats });
-    return stats;
+    await chrome.storage.local.set({ [STATS_KEY]: newStats });
+    return newStats;
 }
 
 // Upload result to server for improvement
-async function uploadResultToServer(result, settings) {
+async function uploadResultToServer(resultData, settings) {
     if (!settings.uploadLocalResults) {
         return { skipped: true, reason: 'Upload disabled' };
     }
@@ -698,8 +722,9 @@ async function uploadResultToServer(result, settings) {
                 ...getAuthHeaders()
             },
             body: JSON.stringify({
-                ...result,
-                clientId: getClientId()
+                version: "0.1.0",
+                clientId: getClientId(),
+                ...resultData
             })
         });
 
@@ -1043,6 +1068,13 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
     const startTime = performance.now();
     const domain = new URL(url).hostname;
 
+    const timings = {
+        total_ms: 0,
+        init_ms: 0,
+        reasoning_ms: 0,
+        scoring_ms: 0
+    };
+
     console.log(`[Ghoti LLM] ▶ Starting analysis for: ${domain}`);
     console.log(`[Ghoti LLM]   URL: ${url}`);
 
@@ -1053,8 +1085,10 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         // Ensure engine is initialized
         if (handler.getStatus() === 'uninitialized' || handler.getStatus() === 'error') {
+            const initStart = performance.now();
             console.log('[Ghoti LLM]   Initializing engine...');
             const initResult = await handler.handleMessage({ type: LLM_MESSAGE_TYPES.INIT });
+            timings.init_ms = performance.now() - initStart;
             console.log('[Ghoti LLM]   Init result:', initResult);
             if (initResult.error) {
                 throw new Error('LLM init failed: ' + initResult.error);
@@ -1071,6 +1105,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         await handler.handleMessage({ type: LLM_MESSAGE_TYPES.RESET });
 
         const genStartTime = performance.now();
+        const reasoningStart = performance.now();
         const step1Result = await handler.handleMessage({
             type: LLM_MESSAGE_TYPES.CHAT,
             message: reasoningPrompt,
@@ -1079,6 +1114,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 max_tokens: 2048 // Increased from 1024 to accommodate chains-of-thought (CoT) and verbose analyses
             }
         });
+        timings.reasoning_ms = performance.now() - reasoningStart;
 
         if (step1Result.error) throw new Error("Reasoning step failed: " + step1Result.error);
         let reasoning = step1Result.content || "No reasoning generated.";
@@ -1106,6 +1142,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         const scoringPrompt = buildLocalScoringPrompt(reasoning);
         console.log(`[Ghoti LLM] Step 2: Generating score for ${domain}...`);
 
+        const scoringStart = performance.now();
         const step2Result = await handler.handleMessage({
             type: LLM_MESSAGE_TYPES.CHAT,
             message: scoringPrompt,
@@ -1114,6 +1151,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 max_tokens: 256 // Lowered to speed up generation, we only need a JSON
             }
         });
+        timings.scoring_ms = performance.now() - scoringStart;
 
         if (step2Result.error) throw new Error("Scoring step failed: " + step2Result.error);
 
@@ -1121,38 +1159,54 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
         console.log(`[Ghoti LLM] Chain complete in ${genTime}s`);
 
         // Fallback: derive score from Step 1's own conclusion when Step 2 fails
-        // Fallback: derive score from Step 1's own analysis when Step 2 fails
         const fallbackToStep1 = (reason) => {
-            const fullText = reasoning.toUpperCase();
+            const text = reasoning; // preserve original case for regex
             const riskIndicators = extractedData?.riskIndicators || [];
 
-            // Check if the analysis acknowledges severe risks
-            const phishingKeywords = [
-                'RISK INDICATOR', 'IMPERSONATION', 'DECEPTIVE', 'ALMOST ALWAYS PHISHING',
-                'HIGH RISK', 'HIGH-RISK', 'CREDENTIAL THEFT', 'MALICIOUS',
-                'SUSPICIOUS TLD', 'PHISHING ATTEMPT', 'FAKE APPLICATION', '🚨',
-                'OLTALAMA', 'ŞÜPHELİ', 'YÜKSEK RİSK', 'KÖTÜ AMAÇLI', 'SUİİSTİMAL',
-                'TAKLİT', 'KREDİ KARTI', 'ŞİFRE ÇALMA', 'GÜVENLİ DEĞİL'
+            // Hard rule: .gov.tr is never flagged by the local model
+            if (domain.endsWith('.gov.tr')) {
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): .gov.tr domain → forced SAFE`);
+                return 0;
+            }
+
+            // Semantic safe patterns (mirrors verdictToScore)
+            const safePatterns = [
+                /\bsummary\s*:\s*safe\b/i,
+                /\bconclusion\s*:\s*safe\b/i,
+                /\bverdict\s*:\s*safe\b/i,
+                /\bsonuç\s*:\s*güvenli\b/i,
+                /\b(is|are|appears?\s+to\s+be|seems?\s+to\s+be|deemed\s+to\s+be|considered\s+to\s+be|classified\s+as)\s+(safe|legitimate|harmless|benign|trustworthy)\b/i,
+                /\b(not|no)\s+(a\s+)?(phishing|scam|malicious|deceptive)\b/i,
+                /\b(site|page|domain)\s+(is|appears?|seems?|looks?)\s+(safe|legitimate|harmless|benign)\b/i,
+                /\bno\s+(threats?|risks?|malicious\s+intent|phishing\s+signs?)\s+(were\s+)?(found|detected|identified)\b/i,
+                /\boltalama\s+değil\b/i,
+                /\bgüvenli\s+olarak\s+(değerlendirilir|kabul|görünür)\b/i,
             ];
 
-            // Check if analysis explicitly concludes it's safe without risks
-            const safeKeywords = [
-                'LEGITIMATE', 'NO DECEPTIVE PATTERNS', 'NO SUSPICIOUS',
-                'NORMAL AND EXPECTED', 'HARMLESS',
-                'GÜVENLİ', 'SAKINCA YOK', 'OLTALAMA DEĞİL', 'MEŞRU',
-                'NORMAL', 'RİSK BULUNMUYOR'
+            // Semantic phishing patterns (mirrors verdictToScore)
+            const phishingPatterns = [
+                /\bsummary\s*:\s*phishing\b/i,
+                /\bconclusion\s*:\s*phishing\b/i,
+                /\bverdict\s*:\s*phishing\b/i,
+                /\bsonuç\s*:\s*(oltalama|phishing)\b/i,
+                /\b(is|are|appears?\s+to\s+be|seems?\s+to\s+be|deemed\s+to\s+be|considered|classified\s+as)\s+(a\s+)?(phishing|malicious|deceptive|fraudulent)\b/i,
+                /\b(this|the)\s+(site|page|domain)\s+(is|appears?|seems?|looks?)\s+(like\s+)?(a\s+)?(phishing|scam|fake|malicious)\b/i,
+                /\boltalama\s+(saldırısı|girişimi|sitesi)\b/i,
             ];
 
-            const phishingHits = phishingKeywords.filter(k => fullText.includes(k)).length;
-            const safeHits = safeKeywords.filter(k => fullText.includes(k)).length;
+            const hasSafeConclusion = safePatterns.some(p => p.test(text));
+            const hasPhishConclusion = phishingPatterns.some(p => p.test(text));
 
-            if (phishingHits > 0 && phishingHits >= safeHits) {
+            // Also check for hard structural risk indicators (🚨 means compound rules fired)
+            const hasHardSignal = riskIndicators.some(r => r.includes('🚨'));
+
+            if (hasPhishConclusion || (hasHardSignal && !hasSafeConclusion)) {
                 const score = verdictToScore('PHISHING', 4, reasoning, riskIndicators);
-                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): detected ${phishingHits} risk keywords in analysis → ${score}%`);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): phishing conclusion detected → ${score}%`);
                 return score;
-            } else if (safeHits > 0 && safeHits > phishingHits) {
+            } else if (hasSafeConclusion) {
                 const score = verdictToScore('SAFE', 4);
-                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): detected mostly safe keywords → ${score}%`);
+                console.log(`[Ghoti LLM] Step 1 fallback (${reason}): safe conclusion detected → ${score}%`);
                 return score;
             } else {
                 console.log(`[Ghoti LLM] Step 1 fallback (${reason}): ambiguous analysis → 12.5%`);
@@ -1216,6 +1270,7 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
 
         console.log(`[Ghoti LLM] ✓ Analysis complete: ${confidence}% | Phishing: ${isPhishing}`);
 
+        timings.total_ms = performance.now() - startTime;
         // Return local analysis result (without raw output)
         return {
             success: true,
@@ -1224,7 +1279,8 @@ async function analyzeWithLocalLLM(url, extractedData, whoisData, localThreshold
                 finalRating: Math.round(confidence),
                 response: reasoning,
                 riskFactors: extractedData?.riskIndicators || [],
-            }
+            },
+            timings: timings
         };
 
     } catch (error) {
@@ -1246,6 +1302,18 @@ async function handlePageAnalysis(data, tabId) {
 
     // Check Settings
     const settings = await chrome.storage.sync.get(DEFAULTS);
+    const overallStart = performance.now();
+    const timings = {
+        extension: {
+            extraction_ms: data.timings?.extraction_ms || 0,
+            serialization_ms: data.timings?.serialization_ms || 0,
+            init_fetch_ms: 0,
+            local_llm: null, // Set if run
+            remote_query_ms: 0
+        },
+        server: {}, // Populated from responses
+        total_ms: 0
+    };
 
     // Auto-enable compareMode when running under Puppeteer/automation
     if (automatedMode) {
@@ -1260,7 +1328,7 @@ async function handlePageAnalysis(data, tabId) {
         console.log('[Ghoti Background] Domain is exempt from whitelist, forcing analysis:', urlObj.hostname);
     }
 
-    let domainInWhitelist = !domainIsExempt && await domainExistsInWhitelist(urlObj.hostname);
+    let domainInWhitelist = false //!domainIsExempt && await domainExistsInWhitelist(urlObj.hostname);
     if (domainInWhitelist) {
         console.log('[Ghoti Background] Domain in whitelist, skipping analysis:', urlObj.hostname);
         const whitelistResult = { finalRating: 0, response: "Domain is whitelisted." };
@@ -1317,6 +1385,9 @@ async function handlePageAnalysis(data, tabId) {
 
     // Helper to finalize, cache, broadcast, and return
     const finalizeAndReturn = async (result) => {
+        timings.total_ms = performance.now() - overallStart;
+        result.timings = timings;
+
         // Result is already pruned inside setTabScanStatus
         const riskCount = (result.queryResult?.riskFactors?.length) || (result.localResult?.riskFactors?.length) || (extractedData?.riskIndicators?.length) || 0;
 
@@ -1353,19 +1424,34 @@ async function handlePageAnalysis(data, tabId) {
     try {
         broadcastScanProgress(tabId, 'fetching_init', 'Sunucuyla iletişim kuruluyor...');
         let payloadUrl = settings.sendDomainOnlyUntilPhishing ? urlObj.hostname : url;
+        const initFetchStart = performance.now();
         const initResponse = await fetch(REMOTE_INIT, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
                 ...getAuthHeaders()
             },
-            body: JSON.stringify({ version: "0.1.0", url: payloadUrl })
+            body: JSON.stringify({
+                version: "0.1.0",
+                url: payloadUrl,
+                timings: { // Send early timings to server
+                    extraction_ms: timings.extension.extraction_ms
+                }
+            })
         });
+        timings.extension.init_fetch_ms = performance.now() - initFetchStart;
+
         if (initResponse.ok) {
             const initData = await initResponse.json();
             if (initData.success) {
                 whoisData = initData.whoisData;
                 isKnownPhishing = initData.isKnownPhishing;
+
+                // Capture server-side timings from init if provided
+                if (initData.timings) {
+                    timings.server.init = initData.timings;
+                }
+
                 console.log('[Ghoti Background] WHOIS data:', whoisData);
                 console.log('[Ghoti Background] Known Phishing status:', isKnownPhishing);
 
@@ -1381,7 +1467,9 @@ async function handlePageAnalysis(data, tabId) {
 
     // 1. Run Local Analysis (with WHOIS data)
     broadcastScanProgress(tabId, 'local_analysis', 'Yerel analiz yapılıyor...');
-    const localAnalysis = await analyzeWithLocalLLM(url, extractedData, whoisData, settings.localThreshold);
+    const localResult = await analyzeWithLocalLLM(url, extractedData, whoisData, settings.localThreshold);
+    timings.extension.local_llm = localResult.timings;
+    const localAnalysis = localResult; // Maintain naming convention for rest of function
     console.log('[Ghoti Background] Local Analysis Result:', localAnalysis);
 
     let localSuspicion = 0;
@@ -1392,6 +1480,7 @@ async function handlePageAnalysis(data, tabId) {
     // 2. Decide whether to use Remote Analysis
     // In compareMode, always run both
     const shouldUseRemote = settings.compareMode ||
+        data.forceRemote || // Manually triggered scan from popup
         localSuspicion > settings.localThreshold ||
         isKnownPhishing || // Force remote analysis if global DB flagged it but local thinks it's safe
         localAnalysis.error;
@@ -1411,7 +1500,8 @@ async function handlePageAnalysis(data, tabId) {
                 remoteConfidence: null,
                 isPhishing: isPhishing,
                 source: 'local'
-            }
+            },
+            timings: timings
         });
 
         // Upload result to server if enabled
@@ -1424,7 +1514,8 @@ async function handlePageAnalysis(data, tabId) {
                 reasoning: localAnalysis.localResult?.response,
                 riskFactors: extractedData?.riskIndicators || [],
                 extractedData: extractedData,
-                modelUsed: 'local-webllm'
+                modelUsed: 'local-webllm',
+                timings: timings // Include full timings in upload
             }, settings).catch(err => console.warn('[Ghoti Background] Upload failed:', err));
         }
 
@@ -1437,7 +1528,7 @@ async function handlePageAnalysis(data, tabId) {
                 finalRating: localSuspicion,
                 response: localAnalysis.localResult?.response || "Analyzed locally, deemed safe.",
                 source: "local",
-                riskFactors: localAnalysis.riskFactors || [], // Ensure risks are passed
+                riskFactors: localAnalysis.localResult?.riskFactors || extractedData?.riskIndicators || [], // Ensure risks are passed
                 error: null
             }
         };
@@ -1452,12 +1543,20 @@ async function handlePageAnalysis(data, tabId) {
         console.log(`[Ghoti Background] Local analysis failed: ${localAnalysis.error}. Escalating to remote...`);
     } else {
         console.log(`[Ghoti Background] Local suspicion (${localSuspicion}%) > Threshold (${settings.localThreshold}%). Escalating to remote...`);
+        if (settings.showEarlyWarningOnLocalEscalation) {
+            chrome.tabs.sendMessage(tabId, {
+                type: 'SHOW_EARLY_WARNING',
+                scanId: data.scanId,
+                probability: 'local_escalation'
+            }).catch(() => { });
+        }
     }
 
     try {
         broadcastScanProgress(tabId, 'remote_analysis', 'Sunucu-tabanlı analiz yapılıyor...');
         // Reuse the WHOIS data we already fetched for local analysis
         const whoisResult = whoisData;
+        const remoteQueryStart = performance.now();
         const queryPromise = new Promise((resolve, reject) => {
             // Browser WS API doesn't support custom headers; pass token as query param
             const wsUrl = AUTH_TOKEN
@@ -1494,6 +1593,14 @@ async function handlePageAnalysis(data, tabId) {
                         url: url,
                         clientId: getClientId(),
                         extractedData: extractedData,
+                        userAgent: navigator.userAgent, // For device simulation
+                        domFingerprint: extractedData.domFingerprint, // For cloaking detection
+                        etag: tabEtags.get(tabId), // Capture ETag for hash-collision check
+                        timings: { // Send extension timings to server
+                            extraction_ms: timings.extension.extraction_ms,
+                            serialization_ms: timings.extension.serialization_ms,
+                            local_llm_ms: timings.extension.local_llm?.total_ms || 0
+                        }
                     };
 
                     if (data.sendPageContent && data.pageContent) {
@@ -1515,6 +1622,10 @@ async function handlePageAnalysis(data, tabId) {
                     // Final result received
                     ws.close();
                     if (response.success) {
+                        // Capture server-side timings from query
+                        if (response.timings) {
+                            timings.server.query = response.timings;
+                        }
                         resolve(response.data);
                     } else {
                         reject(new Error(response.error || 'WebSocket query failed'));
@@ -1541,6 +1652,7 @@ async function handlePageAnalysis(data, tabId) {
 
         // Wait for query to complete (we already have whoisResult)
         const queryResult = await queryPromise;
+        timings.extension.remote_query_ms = performance.now() - remoteQueryStart;
 
         // Merge extracted risk indicators with server reported ones to fix popup visibility empty array bug
         if (extractedData?.riskIndicators && extractedData.riskIndicators.length > 0) {
@@ -1561,7 +1673,8 @@ async function handlePageAnalysis(data, tabId) {
                 remoteConfidence: queryResult.finalRating,
                 isPhishing: isPhishing,
                 source: settings.compareMode ? 'compare' : 'remote'
-            }
+            },
+            timings: timings
         });
 
         // In compare mode, return both results
@@ -1576,7 +1689,7 @@ async function handlePageAnalysis(data, tabId) {
                     finalRating: localSuspicion,
                     response: localAnalysis.localResult?.response || "Local analysis result",
                     source: "local",
-                    riskFactors: localAnalysis.riskFactors || [],
+                    riskFactors: localAnalysis.localResult?.riskFactors || [],
                     error: localAnalysis.error || null
                 }
             };
@@ -1593,7 +1706,7 @@ async function handlePageAnalysis(data, tabId) {
                 finalRating: localSuspicion,
                 response: localAnalysis.localResult?.response || "Local analysis result",
                 source: "local",
-                riskFactors: localAnalysis.riskFactors || [],
+                riskFactors: localAnalysis.localResult?.riskFactors || [],
                 error: localAnalysis.error || null
             }
         };
@@ -1846,7 +1959,7 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
             updateBadge(tabId, null, true);
         }
     } else {
-        chrome.action.setBadgeText({ tabId, text: "" });
+        chrome.action.setBadgeText({ tabId, text: "" }).catch(() => { });
     }
 });
 
@@ -1858,7 +1971,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         // If it's a new URL or a hard reload, clear the badge
         if (url !== lastScanned) {
             await setTabScanStatus(tabId, null);
-            chrome.action.setBadgeText({ tabId, text: "" });
+            chrome.action.setBadgeText({ tabId, text: "" }).catch(() => { });
         }
     }
 });

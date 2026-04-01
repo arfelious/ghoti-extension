@@ -99,6 +99,39 @@ export const PRESET_MODELS = [
         low_resource_required: false,
         overrides: { context_window_size: 4096 },
     },
+    // Qwen3.5 models
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen3.5-0.8B-q4f16_1-MLC',
+        model_id: 'Qwen3.5-0.8B-q4f16_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3.5-0.8B-q4f16_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 1024,
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen3.5-0.8B-q4f32_1-MLC',
+        model_id: 'Qwen3.5-0.8B-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3.5-0.8B-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 1280,
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen3.5-4B-q4f16_1-MLC',
+        model_id: 'Qwen3.5-4B-q4f16_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3.5-4B-q4f16_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 3432, // Same as Qwen3-4B
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
+    {
+        model: 'https://huggingface.co/mlc-ai/Qwen3.5-4B-q4f32_1-MLC',
+        model_id: 'Qwen3.5-4B-q4f32_1-MLC',
+        model_lib: `${MODEL_LIB_URL_PREFIX}${MODEL_VERSION}/Qwen3.5-4B-q4f32_1-ctx4k_cs1k-webgpu.wasm`,
+        vram_required_MB: 4328, // Same as Qwen3-4B
+        low_resource_required: true,
+        overrides: { context_window_size: 4096 },
+    },
     // Llama 3.2 models
     {
         model: 'https://huggingface.co/mlc-ai/Llama-3.2-1B-Instruct-q4f16_1-MLC',

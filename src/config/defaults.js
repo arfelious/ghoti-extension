@@ -21,6 +21,7 @@ export const DEFAULTS = {
     cacheScannedPages: true,             // Cache results for previously scanned pages
     sendPageContent: true,                // Send page content from extension instead of server fetching
     sendDomainOnlyUntilPhishing: true,    // Only send the domain for initial detection until local analysis flags it
+    showEarlyWarningOnLocalEscalation: false, // Show warning toolbar while waiting for remote confirmation
     uploadLocalResults: false,            // Upload local analysis results to server
     scanOnSpaNavigation: false,           // Trigger scans on in-page URL changes (SPAs) 
     isActive: true,                       // Extension active state
@@ -33,6 +34,12 @@ export const DEFAULTS = {
     ollamaEnabled: false,                 // Use Ollama instead of Web-LLM
     ollamaEndpoint: 'http://localhost:11434',
     ollamaModel: '',
+
+    // OpenAI Compatible
+    openaiEnabled: false,                 // Use OpenAI compatible API instead of Web-LLM
+    openaiEndpoint: '',                   // e.g. https://api.openai.com/v1 or custom
+    openaiModel: '',
+    openaiApiKeyEnabled: false,           // Use API key for authentication
 
     // Testing/Development
     compareMode: false,                   // Run both local and remote for comparison

@@ -352,7 +352,7 @@ export function createLLMHandler(options = {}) {
      */
     async function executeChat(message, options = {}) {
         const settings = await chrome.storage.sync.get(DEFAULTS);
-        
+
         if (settings.ollamaEnabled) {
             status = LLM_STATUS.GENERATING;
             const endpoint = getNormalizedOllamaEndpoint(settings);
@@ -369,7 +369,7 @@ export function createLLMHandler(options = {}) {
                         messages: [{ role: 'user', content: message }],
                         stream: false,
                         options: {
-                            temperature: options.temperature ?? 0.1,
+                            temperature: options.temperature ?? 0.25,
                             num_predict: options.max_tokens ?? 2048,
                             stop: options.stop || []
                         },
@@ -379,7 +379,7 @@ export function createLLMHandler(options = {}) {
 
                 if (!response.ok) throw await buildOllamaHttpError(response);
                 const data = await response.json();
-                
+
                 status = LLM_STATUS.READY;
                 clearLastError();
                 return { content: data.message?.content || '' };
@@ -390,6 +390,61 @@ export function createLLMHandler(options = {}) {
                     throw new Error('Generation aborted');
                 }
                 setLastError('ollama', error?.message || 'Ollama request failed', error?.code ?? null);
+                status = LLM_STATUS.ERROR;
+                throw error;
+            } finally {
+                if (activeOllamaAbortController === abortController) {
+                    activeOllamaAbortController = null;
+                }
+            }
+        }
+
+        if (settings.openaiEnabled) {
+            status = LLM_STATUS.GENERATING;
+            const endpoint = (settings.openaiEndpoint || '').trim().replace(/\/+$/, '');
+            const model = (settings.openaiModel || '').trim();
+            const localData = await chrome.storage.local.get('openaiApiKey');
+            const apiKey = settings.openaiApiKeyEnabled ? (localData.openaiApiKey || '') : '';
+
+            const abortController = new AbortController();
+            activeOllamaAbortController = abortController;
+
+            try {
+                const response = await fetch(`${endpoint}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+                    },
+                    signal: abortController.signal,
+                    body: JSON.stringify({
+                        model,
+                        messages: [{ role: 'user', content: message }],
+                        stream: false,
+                        temperature: options.temperature ?? 0.25,
+                        max_tokens: options.max_tokens ?? 2048,
+                        stop: options.stop || [],
+                        response_format: options.response_format
+                    })
+                });
+
+                if (!response.ok) {
+                    const detail = await response.text();
+                    const err = new Error(`OpenAI API error (${response.status}): ${detail.slice(0, 200)}`);
+                    err.source = 'openai';
+                    throw err;
+                }
+                const data = await response.json();
+
+                status = LLM_STATUS.READY;
+                clearLastError();
+                return { content: data.choices[0]?.message?.content || '' };
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    status = LLM_STATUS.READY;
+                    throw new Error('Generation aborted');
+                }
+                setLastError('openai', error?.message || 'OpenAI request failed');
                 status = LLM_STATUS.ERROR;
                 throw error;
             } finally {
@@ -466,7 +521,7 @@ export function createLLMHandler(options = {}) {
                         messages: [{ role: 'user', content: message }],
                         stream: true,
                         options: {
-                            temperature: options.temperature ?? 0.1,
+                            temperature: options.temperature ?? 0.25,
                             num_predict: options.max_tokens ?? 2048,
                             stop: options.stop || []
                         },
@@ -497,7 +552,7 @@ export function createLLMHandler(options = {}) {
                         try {
                             const data = JSON.parse(trimmedLine);
                             const delta = data.message?.content || '';
-                            
+
                             if (delta) {
                                 fullContent += delta;
                                 sendStreamMessage(sender, {
@@ -559,6 +614,103 @@ export function createLLMHandler(options = {}) {
                     streamId,
                     error: error?.message || 'Ollama streaming failed',
                 });
+                throw error;
+            } finally {
+                if (activeOllamaAbortController === abortController) {
+                    activeOllamaAbortController = null;
+                }
+            }
+        }
+
+        if (settings.openaiEnabled) {
+            status = LLM_STATUS.GENERATING;
+            const endpoint = (settings.openaiEndpoint || '').trim().replace(/\/+$/, '');
+            const model = (settings.openaiModel || '').trim();
+            const localData = await chrome.storage.local.get('openaiApiKey');
+            const apiKey = settings.openaiApiKeyEnabled ? (localData.openaiApiKey || '') : '';
+
+            const abortController = new AbortController();
+            activeOllamaAbortController = abortController;
+
+            try {
+                const response = await fetch(`${endpoint}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+                    },
+                    signal: abortController.signal,
+                    body: JSON.stringify({
+                        model,
+                        messages: [{ role: 'user', content: message }],
+                        stream: true,
+                        temperature: options.temperature ?? 0.25,
+                        max_tokens: options.max_tokens ?? 2048,
+                        stop: options.stop || [],
+                        response_format: options.response_format
+                    })
+                });
+
+                if (!response.ok) {
+                    const detail = await response.text();
+                    const err = new Error(`OpenAI API error (${response.status}): ${detail.slice(0, 200)}`);
+                    err.source = 'openai';
+                    throw err;
+                }
+                if (!response.body) throw new Error('OpenAI API returned empty stream body');
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullContent = '';
+                let chunkBuffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    chunkBuffer += decoder.decode(value, { stream: true });
+                    const lines = chunkBuffer.split('\n');
+                    chunkBuffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+
+                        const jsonStr = trimmedLine.slice(6);
+                        if (jsonStr === '[DONE]') break;
+
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            const delta = data.choices[0]?.delta?.content || '';
+
+                            if (delta) {
+                                fullContent += delta;
+                                sendStreamMessage(sender, {
+                                    type: LLM_MESSAGE_TYPES.CHAT_STREAM_CHUNK,
+                                    streamId,
+                                    content: delta,
+                                });
+                            }
+                        } catch (e) {
+                            console.warn('[LLM Handler] Failed to parse OpenAI chunk:', jsonStr);
+                        }
+                    }
+                }
+
+                status = LLM_STATUS.READY;
+                clearLastError();
+                sendStreamMessage(sender, { type: LLM_MESSAGE_TYPES.CHAT_STREAM_END, streamId });
+                return { success: true };
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    status = LLM_STATUS.READY;
+                    sendStreamMessage(sender, { type: LLM_MESSAGE_TYPES.ERROR, streamId, error: 'Generation aborted' });
+                    return { success: false, aborted: true };
+                }
+
+                setLastError('openai', error?.message || 'OpenAI streaming failed');
+                status = LLM_STATUS.ERROR;
+                sendStreamMessage(sender, { type: LLM_MESSAGE_TYPES.ERROR, streamId, error: error?.message || 'OpenAI streaming failed' });
                 throw error;
             } finally {
                 if (activeOllamaAbortController === abortController) {
@@ -679,10 +831,10 @@ export function createLLMHandler(options = {}) {
                     const settings = await chrome.storage.sync.get(DEFAULTS);
                     return {
                         status,
-                        loadProgress: settings.ollamaEnabled ? 1 : loadProgress,
-                        modelId: settings.ollamaEnabled ? (settings.ollamaModel || 'Ollama') : (currentModelId || config.modelId),
+                        loadProgress: (settings.ollamaEnabled || settings.openaiEnabled) ? 1 : loadProgress,
+                        modelId: settings.ollamaEnabled ? (settings.ollamaModel || 'Ollama') : (settings.openaiEnabled ? (settings.openaiModel || 'OpenAI') : (currentModelId || config.modelId)),
                         historyLength: chatHistory.length,
-                        engine: settings.ollamaEnabled ? 'Ollama' : 'Web-LLM',
+                        engine: settings.ollamaEnabled ? 'Ollama' : (settings.openaiEnabled ? 'OpenAI Uyumlu' : 'Web-LLM'),
                         errorSource: lastErrorSource,
                         errorCode: lastErrorCode,
                         errorMessage: lastErrorMessage,

@@ -36,7 +36,7 @@ export const LLM_MESSAGE_TYPES = {
 export const DEFAULT_CONFIG = {
     // Small model for quick testing - change to larger model for production
     modelId: 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC',
-
+    // modelId: "Qwen3-0.6B-q4f32_1-MLC"
     // Alternative models (uncomment to use):
     // modelId: 'Llama-3.1-8B-Instruct-q4f32_1-MLC',
     // modelId: 'Phi-3-mini-4k-instruct-q4f16_1-MLC',
@@ -45,11 +45,11 @@ export const DEFAULT_CONFIG = {
 
 // LLM generation options
 export const LLM_OPTIONS = {
-    temperature: 0.1, // Keep very low to ensure strict JSON adherence
+    temperature: 0.25, // Slightly higher for better generation quality
     repetition_penalty: 1.1,
     // Add these for smaller models to ensure they stop generating after JSON is complete
     stop: ["}", "}\n", "```", "```json", "<|endoftext|>", "<|im_end|>"],
-    max_tokens: 2048,  // Limit output to ~2048 tokens (plenty for JSON response)
+    max_tokens: 3072,  // Limit output to ~2048 tokens (plenty for JSON response)
     response_format: { type: "json_object" }
 };
 
