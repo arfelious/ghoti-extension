@@ -25,6 +25,7 @@
     "512": "icons/logo_512.png"
   },
   "permissions": [
+    "webRequest",
     "scripting",
     "tabs",
     "storage",

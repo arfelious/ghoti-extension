@@ -1,6 +1,6 @@
 import { extractPageData, initParsers } from 'shared/extractor.js';
 
-// Internal state Symbols for robust deduplication (non-enumerable, hidden from page scripts)
+// Internal state Symbols for deduplication (non-enumerable, hidden from page scripts)
 // Using Symbol.for to ensure these are consistent across possible script re-injections
 const ACTIVE_SCAN_ID = Symbol.for('GhotiActiveScanId');
 const INJECTED_TOOLBAR_ID = Symbol.for('GhotiInjectedToolbarId');
@@ -180,7 +180,7 @@ function injectToolbar(probability, scanId = null) {
   } else if (probability === null) {
     toolbar.textContent = '🚨 UYARI: Bu site tehlikeli olabilir! Kişisel bilgilerinizi girmeyin.';
   } else if (probability === undefined) {
-    toolbar.textContent = 'Analiz ediliyor...';  // "Analysing..."
+    toolbar.textContent = 'Analiz ediliyor...';  // Translation: "Analysing..."
   } else {
     toolbar.textContent = `🚨 UYARI: Oltalama riski %${probability} - Kişisel bilgilerinizi girmeyin!`;
   }

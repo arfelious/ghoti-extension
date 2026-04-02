@@ -90,7 +90,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     ['responseHeaders']
 );
 
-// TrackTabs that need scanning but wasn't ready to receive START_SCAN
+// Track tabs that need scanning but weren't ready
 const pendingScans = new Map();
 
 // Debounce timers for same-domain navigations (tabId -> timeoutId)
@@ -599,8 +599,7 @@ function setupHeartbeat() {
                 // Trivial extension API call to reset the idle timer
                 chrome.storage.local.get([STATS_KEY], () => {
                     const now = new Date().toLocaleTimeString();
-                    // We don't want to spam the log buffer with heartbeats, 
-                    // so we just log to the real console
+                    // Log to the real console to avoid flooding the log buffer
                     originalLog.apply(console, [`[Ghoti Heartbeat] 💓 Pulsed at ${now}`]);
                 });
             }
@@ -649,7 +648,7 @@ chrome.runtime.onInstalled.addListener(async () => {
     const newSettings = { ...DEFAULTS, ...currentSettings };
     await chrome.storage.sync.set(newSettings);
 
-    // Also clear persistent caches on update so the user gets fresh evaluations instead of old 12.5% bugs
+    // Clear persistent caches on update to ensure fresh evaluations
     await chrome.storage.local.remove(['ghoti_decision_cache', 'ghoti_detailed_cache']);
     console.log('[Ghoti Background] Cleared persistent scan caches due to extension update.');
 });
@@ -1328,7 +1327,7 @@ async function handlePageAnalysis(data, tabId) {
         console.log('[Ghoti Background] Domain is exempt from whitelist, forcing analysis:', urlObj.hostname);
     }
 
-    let domainInWhitelist = false //!domainIsExempt && await domainExistsInWhitelist(urlObj.hostname);
+    let domainInWhitelist = !domainIsExempt && await domainExistsInWhitelist(urlObj.hostname);
     if (domainInWhitelist) {
         console.log('[Ghoti Background] Domain in whitelist, skipping analysis:', urlObj.hostname);
         const whitelistResult = { finalRating: 0, response: "Domain is whitelisted." };
