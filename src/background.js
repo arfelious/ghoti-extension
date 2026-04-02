@@ -12,18 +12,18 @@ globalThis.fetch = async function (url, options) {
     }
 };
 
-const REMOTE_INIT = "http://localhost:9701/extension-init";
-const REMOTE_QUERY = "http://localhost:9701/query";
-const REMOTE_QUERY_WS = "ws://localhost:9701/query";
-const REMOTE_SUBMIT_RESULT = "http://localhost:9701/submit-result";
-const REMOTE_STATS = "http://localhost:9701/stats";
-const REMOTE_WHOIS = "http://localhost:9701/whois";
-const REMOTE_AUTH_VERIFY = "http://localhost:9701/auth/verify";
+const REMOTE_INIT = `${SERVER_BASE}/extension-init`;
+const REMOTE_QUERY = `${SERVER_BASE}/query`;
+const REMOTE_QUERY_WS = `${WS_BASE}/query`;
+const REMOTE_SUBMIT_RESULT = `${SERVER_BASE}/submit-result`;
+const REMOTE_STATS = `${SERVER_BASE}/stats`;
+const REMOTE_WHOIS = `${SERVER_BASE}/whois`;
+const REMOTE_AUTH_VERIFY = `${SERVER_BASE}/auth/verify`;
 const whitelistDbName = 'GhotiDefaultWL';
 import { createLLMHandler, LLM_MESSAGE_TYPES } from './llm';
 import { buildSimplePrompt, buildLocalReasoningPrompt, buildLocalScoringPrompt, PHISHING_SCHEMA, verdictToScore } from 'shared/prompt-builder.js';
 import { DEFAULTS } from './config/defaults.js';
-import { SERVER_BASE } from './config/env.js';
+import { SERVER_BASE, WS_BASE } from './config/env.js';
 
 // Logging buffer for Settings page
 let MAX_LOGS = DEFAULTS.maxLogs;
@@ -278,16 +278,15 @@ async function finalizeAndReturn(tabId, result, count) {
 // ========== AUTH LAYER ==========
 
 // Domains where we watch for ghoti login
-const GHOTI_DOMAINS = ['ghoti.com.tr', 'www.ghoti.com.tr', 'localhost', '127.0.0.1'];
+const GHOTI_URL_OBJ = new URL(SERVER_BASE);
+const GHOTI_DOMAINS = [GHOTI_URL_OBJ.hostname, 'www.' + GHOTI_URL_OBJ.hostname, 'localhost', '127.0.0.1'];
 
 function isGhotiUrl(url) {
     try {
         const u = new URL(url);
         // Match official domains or local dev server
-        const isOfficial = ['ghoti.com.tr', 'www.ghoti.com.tr'].includes(u.hostname);
-        const isLocalDev = (u.hostname === 'localhost' || u.hostname === '127.0.0.1') && (u.port === '9701' || u.port === 9701);
+        const match = u.hostname === GHOTI_URL_OBJ.hostname && (GHOTI_URL_OBJ.port ? u.port == GHOTI_URL_OBJ.port : true);
 
-        const match = isOfficial || isLocalDev;
         if (match) console.log('[Ghoti Auth] isGhotiUrl true for:', url);
         return match;
     } catch { return false; }

@@ -283,10 +283,16 @@ function setupLLMStatusPolling() {
                     const riskSummaryEl = document.getElementById('results-summary');
                     const riskCountEl = document.getElementById('risk-count-display');
                     if (riskSummaryEl && riskCountEl) {
+                        const queryRating = message.result?.queryResult?.finalRating || 0;
+                        const localRating = message.result?.localResult?.finalRating || 0;
+                        const maxRating = Math.max(queryRating, localRating);
+                        
                         const count = message.riskCount || 0;
                         riskCountEl.textContent = `${count} Oltalama Riski Tespit Edildi`;
-                        riskSummaryEl.style.display = count > 0 ? 'flex' : 'none';
-                        riskSummaryEl.className = count > 3 ? 'results-summary phishing' : 'results-summary';
+                        
+                        // HIDE signals if verdict is 0% (SAFE)
+                        riskSummaryEl.style.display = (count > 0 && maxRating > 0) ? 'flex' : 'none';
+                        riskSummaryEl.className = maxRating > 30 ? 'results-summary phishing' : 'results-summary';
 
                         // Render full details
                         const riskFactors = message.result?.queryResult?.riskFactors ||
@@ -369,13 +375,19 @@ async function fetchInitialScanResult() {
                 const riskSummaryEl = document.getElementById('results-summary');
                 const riskCountEl = document.getElementById('risk-count-display');
                 if (riskSummaryEl && riskCountEl) {
+                    const queryRating = scanStatus.result.queryResult?.finalRating || 0;
+                    const localRating = scanStatus.result.localResult?.finalRating || 0;
+                    const maxRating = Math.max(queryRating, localRating);
+
                     const riskFactors = scanStatus.result.queryResult?.riskFactors ||
                         scanStatus.result.localResult?.riskFactors || [];
                     const count = riskFactors.length;
 
                     riskCountEl.textContent = `${count} Oltalama Riski Tespit Edildi`;
-                    riskSummaryEl.style.display = count > 0 ? 'flex' : 'none';
-                    riskSummaryEl.className = count > 3 ? 'results-summary phishing' : 'results-summary';
+                    
+                    // Hide if 0% phishing
+                    riskSummaryEl.style.display = (count > 0 && maxRating > 0) ? 'flex' : 'none';
+                    riskSummaryEl.className = maxRating > 30 ? 'results-summary phishing' : 'results-summary';
 
                     renderRiskDetails(riskFactors);
                 }

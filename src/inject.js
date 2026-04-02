@@ -1,4 +1,5 @@
 import { extractPageData, initParsers } from 'shared/extractor.js';
+import { SERVER_BASE } from './config/env.js';
 
 // Internal state Symbols for deduplication (non-enumerable, hidden from page scripts)
 // Using Symbol.for to ensure these are consistent across possible script re-injections
@@ -506,7 +507,8 @@ try {
 window.addEventListener('message', (event) => {
   // Security check: Only trust messages from our own domain
   const origin = event.origin || (event.originalEvent && event.originalEvent.origin);
-  const isGhotiOrigin = origin && (origin.includes('ghoti.com.tr') || origin.includes('localhost') || origin.includes('127.0.0.1'));
+  const ghotiUrl = new URL(SERVER_BASE);
+  const isGhotiOrigin = origin && (origin === ghotiUrl.origin || origin.includes('ghoti.com.tr'));
   if (!isGhotiOrigin) return;
 
   if (event.data && event.data.type === 'GHOTI_AUTH_UPDATE') {
@@ -528,11 +530,12 @@ window.addEventListener('message', (event) => {
 // Proactive trace: If we are on a Ghoti page, check for existing session on load
 (function autoTraceAuth() {
   const host = window.location.hostname;
-  const isGhotiHost = ['ghoti.com.tr', 'www.ghoti.com.tr', 'localhost', '127.0.0.1'].includes(host);
+  const ghotiUrl = new URL(SERVER_BASE);
+  const isGhotiHost = host === ghotiUrl.hostname || ['ghoti.com.tr', 'www.ghoti.com.tr'].includes(host);
   if (!isGhotiHost) return;
 
   // Additional check for dev port if on localhost
-  if ((host === 'localhost' || host === '127.0.0.1') && window.location.port !== '9701') return;
+  if (ghotiUrl.port && window.location.port !== ghotiUrl.port) return;
 
   console.log('[Ghoti] Proactive auth trace on:', window.location.href);
   const token = localStorage.getItem('ghoti_token');
