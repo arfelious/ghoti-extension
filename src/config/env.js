@@ -9,7 +9,7 @@
  */
 
 // Set to true for production builds
-const IS_PROD = true;
+const IS_PROD = false;
 
 // Set to true to test auth flow on localhost
 const AUTH_TEST = false;

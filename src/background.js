@@ -350,7 +350,8 @@ async function initAuth() {
         try {
             console.log('[Ghoti Auth] Verifying token with server...');
             const response = await fetch(REMOTE_AUTH_VERIFY, {
-                method: 'POST',
+                method: "POST",
+                credentials: "omit",
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${AUTH_TOKEN}`
@@ -714,7 +715,8 @@ async function uploadResultToServer(resultData, settings) {
 
     try {
         const response = await fetch(REMOTE_SUBMIT_RESULT, {
-            method: 'POST',
+            method: "POST",
+            credentials: "omit",
             headers: {
                 'Content-Type': 'application/json',
                 ...getAuthHeaders()
@@ -899,7 +901,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.type === 'GET_SERVER_STATS') {
-        fetch(REMOTE_STATS)
+        fetch(REMOTE_STATS, { credentials: "omit" })
             .then(r => r.json())
             .then(sendResponse)
             .catch(error => {
@@ -1425,6 +1427,7 @@ async function handlePageAnalysis(data, tabId) {
         const initFetchStart = performance.now();
         const initResponse = await fetch(REMOTE_INIT, {
             method: "POST",
+            credentials: "omit",
             headers: {
                 "content-type": "application/json",
                 ...getAuthHeaders()
@@ -1772,6 +1775,7 @@ async function handleWhoisLookup(data) {
     try {
         const response = await fetch(REMOTE_WHOIS, {
             method: "POST",
+            credentials: "omit",
             headers: {
                 "content-type": "application/json",
                 ...getAuthHeaders()

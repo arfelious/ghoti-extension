@@ -32,8 +32,8 @@
     "nativeMessaging"
   ],
   "host_permissions": [
-    "<all_urls>",
-    "*://*/*",
+    "https://ghoti.com.tr/*",
+    "https://*.ghoti.com.tr/*",
     "http://localhost:9701/*"
   ],
   "background": {
@@ -53,7 +53,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.hf.co https://raw.githubusercontent.com"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:* https://ghoti.com.tr https://*.ghoti.com.tr wss://ghoti.com.tr wss://*.ghoti.com.tr https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.hf.co https://raw.githubusercontent.com"
   },
   "web_accessible_resources": [
     {
