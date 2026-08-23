@@ -6,7 +6,7 @@
  * messages from the frontend adapter.
  */
 
-import { CreateMLCEngine } from '../web-llm';
+import { CreateMLCEngine } from '@mlc-ai/web-llm';
 import { LLM_MESSAGE_TYPES, DEFAULT_CONFIG, LLM_STATUS } from './config.js';
 import { DEFAULTS } from '../config/defaults.js';
 import {

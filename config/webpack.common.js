@@ -1,14 +1,19 @@
 'use strict';
 
+const path = require('path');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const TerserPlugin = require('terser-webpack-plugin');
 
 const PATHS = require('./paths');
+const envConfig = require('../src/config/env.js');
+
+const useLocalWebLLM = (envConfig.default?.USE_LOCAL_WEB_LLM ?? envConfig.USE_LOCAL_WEB_LLM) ?? true;
 
 // Detect target browser from environment
 const TARGET_BROWSER = process.env.TARGET_BROWSER || 'chrome';
 console.log(`[Ghoti Build] Target: ${TARGET_BROWSER}`);
+console.log(`[Ghoti Build] Web-LLM source: ${useLocalWebLLM ? './src/web-llm (local)' : 'node_modules/@mlc-ai/web-llm'}`);
 
 // used in the module rules and in the stats exlude list
 const IMAGE_TYPES = /\.(png|jpe?g|gif|svg)$/i;
@@ -41,6 +46,12 @@ const common = {
   resolve: {
     alias: {
       'shared': PATHS.shared,
+      '@mlc-ai/web-llm': useLocalWebLLM
+        ? path.resolve(PATHS.src, 'web-llm')
+        : path.resolve(__dirname, '../node_modules/@mlc-ai/web-llm'),
+      ...(useLocalWebLLM ? {} : {
+        [path.resolve(PATHS.src, 'web-llm')]: path.resolve(__dirname, '../node_modules/@mlc-ai/web-llm'),
+      }),
     },
   },
   stats: {
