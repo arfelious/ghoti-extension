@@ -16,9 +16,9 @@ Eklenti, kullanıcının ziyaret ettiği web sayfalarının DOM ağacını ve ü
 Analiz süreci iki aşamalı bir yerel çıkarım süreci ve gerekmesi halinde merkezi model tarafından gerçekleşen kapsamlı analiz ile yürütülür:
 * **Gerekçelendirme (Reasoning)**: Çıkarılan DOM sinyalleri kullanılarak `shared/prompt-builder.js` aracılığıyla bir teknik analiz istemi (prompt) oluşturulur. Yerel LLM (Web-LLM / WebGPU üzerinden) bu istemi işleyerek gerekçeli bir rapor hazırlar.
 * **Puanlama ve Karar (Scoring & Verdict)**:
-  * Dil modeli, oluşturduğu analizi yapılandırılmış bir JSON şemasına dönüştürür.
+  * Dil modeli, oluşturduğu analizi JSON formatında yapılandırılmış halde sunar.
   * Oluşturulan analiz metni ayrı kriterlere ve ayrıştırılmış göstergelere göre sınıflandırılır.
-  * Çıktı olarak 0-100 arasında bir risk puanı ve risk faktörleri listesi üretilir.
+  * Çıktı olarak riskli bulunup bulunmadığı ve güven seviyesi üretilir..
 
 ### 3. Durum ve Bellek Yönetimi
 * **Önbellek (Caching)**: Aynı URL'lerin tekrar tekrar analiz edilmesini önlemek amacıyla oturum bazlı bellek önbelleği ile `chrome.storage.local` üzerinde tutulan bir LRU (Least Recently Used) cache sistemi kullanılır. Karar cache limiti 1000, detay cache limiti 200 adet kayıt ile sınırlandırılmıştır.
@@ -88,7 +88,7 @@ graph TD
 Eklentiyi yerel ortamda çalıştırmak ve derlemek için aşağıdaki adımları izleyin.
 
 ### Gereksinimler
-* Node.js (v16 veya üzeri)
+* Node.js (v16+)
 * npm
 
 ### Bağımlılıkların Yüklenmesi
@@ -102,7 +102,7 @@ Değişikliklerin otomatik olarak build sürecinden geçmesi için
 npm run watch
 ```
 
-### Derleme Kodları
+### Build Komutları
 Farklı tarayıcı hedefleri için build komutları:
 
 * **Firefox**:
